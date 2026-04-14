@@ -12,9 +12,12 @@ export function transformMessages<TApi extends Api>(
 ): Message[] {
 	// Build a map of original tool call IDs to normalized IDs
 	const toolCallIdMap = new Map<string, string>();
+	// Track assistant turns where malformed tool calls were removed.
+	// We use this to trim only the immediately following tool results.
+	const droppedMalformedToolCallsByAssistantIndex = new Set<number>();
 
 	// First pass: transform messages (thinking blocks, tool call ID normalization)
-	const transformed = messages.map((msg) => {
+	const transformed = messages.map((msg, msgIndex) => {
 		// User messages pass through unchanged
 		if (msg.role === "user") {
 			return msg;
@@ -32,6 +35,7 @@ export function transformMessages<TApi extends Api>(
 		// Assistant messages need transformation check
 		if (msg.role === "assistant") {
 			const assistantMsg = msg as AssistantMessage;
+			let droppedMalformedToolCall = false;
 			const isSameModel =
 				assistantMsg.provider === model.provider &&
 				assistantMsg.api === model.api &&
@@ -66,6 +70,11 @@ export function transformMessages<TApi extends Api>(
 
 				if (block.type === "toolCall") {
 					const toolCall = block as ToolCall;
+					if (!toolCall.name || toolCall.name.trim().length === 0) {
+						droppedMalformedToolCall = true;
+						return [];
+					}
+
 					let normalizedToolCall: ToolCall = toolCall;
 
 					if (!isSameModel && toolCall.thoughtSignature) {
@@ -87,6 +96,10 @@ export function transformMessages<TApi extends Api>(
 				return block;
 			});
 
+			if (droppedMalformedToolCall) {
+				droppedMalformedToolCallsByAssistantIndex.add(msgIndex);
+			}
+
 			return {
 				...assistantMsg,
 				content: transformedContent,
@@ -100,6 +113,7 @@ export function transformMessages<TApi extends Api>(
 	const result: Message[] = [];
 	let pendingToolCalls: ToolCall[] = [];
 	let existingToolResultIds = new Set<string>();
+	let immediateToolResultAllowlist: Set<string> | undefined;
 
 	for (let i = 0; i < transformed.length; i++) {
 		const msg = transformed[i];
@@ -130,11 +144,25 @@ export function transformMessages<TApi extends Api>(
 			// - The model should retry from the last valid state
 			const assistantMsg = msg as AssistantMessage;
 			if (assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") {
+				immediateToolResultAllowlist = undefined;
+				continue;
+			}
+
+			// If this assistant originally contained malformed tool calls, only keep
+			// immediate tool results that match surviving tool calls from this turn.
+			const toolCalls = assistantMsg.content.filter((b) => b.type === "toolCall") as ToolCall[];
+			if (droppedMalformedToolCallsByAssistantIndex.has(i)) {
+				immediateToolResultAllowlist = new Set(toolCalls.map((tc) => tc.id));
+			} else {
+				immediateToolResultAllowlist = undefined;
+			}
+
+			// Skip empty assistant messages created by sanitization (for instance, invalid tool calls removed).
+			if (assistantMsg.content.length === 0) {
 				continue;
 			}
 
 			// Track tool calls from this assistant message
-			const toolCalls = assistantMsg.content.filter((b) => b.type === "toolCall") as ToolCall[];
 			if (toolCalls.length > 0) {
 				pendingToolCalls = toolCalls;
 				existingToolResultIds = new Set();
@@ -142,9 +170,13 @@ export function transformMessages<TApi extends Api>(
 
 			result.push(msg);
 		} else if (msg.role === "toolResult") {
+			if (immediateToolResultAllowlist && !immediateToolResultAllowlist.has(msg.toolCallId)) {
+				continue;
+			}
 			existingToolResultIds.add(msg.toolCallId);
 			result.push(msg);
 		} else if (msg.role === "user") {
+			immediateToolResultAllowlist = undefined;
 			// User message interrupts tool flow - insert synthetic results for orphaned calls
 			if (pendingToolCalls.length > 0) {
 				for (const tc of pendingToolCalls) {
@@ -164,6 +196,7 @@ export function transformMessages<TApi extends Api>(
 			}
 			result.push(msg);
 		} else {
+			immediateToolResultAllowlist = undefined;
 			result.push(msg);
 		}
 	}

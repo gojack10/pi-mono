@@ -112,4 +112,104 @@ describe("OpenAI to Anthropic session migration for Copilot Claude", () => {
 
 		expect(toolCall.thoughtSignature).toBeUndefined();
 	});
+
+	it("drops immediate orphan tool results for malformed calls while preserving valid and later-colliding ids", () => {
+		const model = makeCopilotClaudeModel();
+		const ts = Date.now();
+		const usage = {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+
+		const messages: Message[] = [
+			{ role: "user", content: "run", timestamp: ts },
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Working on it" },
+					{ type: "toolCall", id: "abc_def", name: "", arguments: { "": "bad" } },
+					{ type: "toolCall", id: "good|id", name: "bash", arguments: { command: "pwd" } },
+				],
+				api: "openai-completions",
+				provider: "github-copilot",
+				model: "gpt-4o",
+				usage,
+				stopReason: "toolUse",
+				timestamp: ts,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "abc_def",
+				toolName: "",
+				content: [{ type: "text", text: "dropped malformed result" }],
+				isError: true,
+				timestamp: ts,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "good|id",
+				toolName: "bash",
+				content: [{ type: "text", text: "kept immediate valid result" }],
+				isError: false,
+				timestamp: ts,
+			},
+			{
+				role: "assistant",
+				content: [{ type: "toolCall", id: "abc|def", name: "bash", arguments: { command: "ls" } }],
+				api: "openai-completions",
+				provider: "github-copilot",
+				model: "gpt-4o",
+				usage,
+				stopReason: "toolUse",
+				timestamp: ts,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "abc|def",
+				toolName: "bash",
+				content: [{ type: "text", text: "kept later colliding result" }],
+				isError: false,
+				timestamp: ts,
+			},
+			{ role: "user", content: "continue", timestamp: ts },
+		];
+
+		const result = transformMessages(messages, model, anthropicNormalizeToolCallId);
+
+		expect(result.map((m) => m.role)).toEqual(["user", "assistant", "toolResult", "assistant", "toolResult", "user"]);
+		expect(
+			result.some(
+				(m) =>
+					m.role === "toolResult" &&
+					m.content[0]?.type === "text" &&
+					m.content[0].text === "kept immediate valid result",
+			),
+		).toBe(true);
+		expect(
+			result.some(
+				(m) =>
+					m.role === "toolResult" &&
+					m.content[0]?.type === "text" &&
+					m.content[0].text === "kept later colliding result",
+			),
+		).toBe(true);
+		expect(
+			result.some(
+				(m) =>
+					m.role === "toolResult" &&
+					m.content[0]?.type === "text" &&
+					m.content[0].text === "dropped malformed result",
+			),
+		).toBe(false);
+		expect(
+			result.some(
+				(m) =>
+					m.role === "toolResult" && m.content[0]?.type === "text" && m.content[0].text === "No result provided",
+			),
+		).toBe(false);
+	});
 });
