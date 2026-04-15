@@ -161,6 +161,7 @@ export interface ToolCall {
 	id: string;
 	name: string;
 	arguments: Record<string, any>;
+	argumentsParseError?: string; // Anthropic specific: holds parsing errors from bad JSON
 	thoughtSignature?: string; // Google-specific: opaque signature for reusing thought context
 }
 

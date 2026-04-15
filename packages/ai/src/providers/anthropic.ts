@@ -25,7 +25,7 @@ import type {
 	ToolResultMessage,
 } from "../types.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
-import { parseStreamingJson } from "../utils/json-parse.js";
+import { parseStreamingJson, parseStreamingJsonWithIndicator } from "../utils/json-parse.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
 
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
@@ -196,6 +196,35 @@ function mergeHeaders(...headerSources: (Record<string, string> | undefined)[]):
 	return merged;
 }
 
+type ParsedToolInput = {
+	arguments: Record<string, unknown>;
+	argumentsParseError?: string;
+};
+
+function parseToolInputJson(rawJson: string): ParsedToolInput {
+	const [args, err] = parseStreamingJsonWithIndicator<Record<string, unknown>>(rawJson);
+	if (err !== undefined) {
+		return {
+			arguments: args,
+			argumentsParseError: err,
+		};
+	} else {
+		return { arguments: args };
+	}
+}
+
+function normalizeToolInput(input: unknown): ParsedToolInput {
+	if (!input) {
+		return { arguments: {} };
+	} else if (typeof input === "string") {
+		return parseToolInputJson(input);
+	} else {
+		return {
+			arguments: input as Record<string, unknown>,
+		};
+	}
+}
+
 export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOptions> = (
 	model: Model<"anthropic-messages">,
 	context: Context,
@@ -256,7 +285,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 			if (nextParams !== undefined) {
 				params = nextParams as MessageCreateParamsStreaming;
 			}
-			const anthropicStream = client.messages.stream({ ...params, stream: true }, { signal: options?.signal });
+			const anthropicStream = await client.messages.create({ ...params, stream: true }, { signal: options?.signal });
 			stream.push({ type: "start", partial: output });
 
 			type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & { index: number };
@@ -304,13 +333,17 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 						output.content.push(block);
 						stream.push({ type: "thinking_start", contentIndex: output.content.length - 1, partial: output });
 					} else if (event.content_block.type === "tool_use") {
+						const normalizedInput = normalizeToolInput(event.content_block.input);
 						const block: Block = {
 							type: "toolCall",
 							id: event.content_block.id,
 							name: isOAuth
 								? fromClaudeCodeName(event.content_block.name, context.tools)
 								: event.content_block.name,
-							arguments: (event.content_block.input as Record<string, any>) ?? {},
+							arguments: normalizedInput.arguments,
+							...(normalizedInput.argumentsParseError
+								? { argumentsParseError: normalizedInput.argumentsParseError }
+								: {}),
 							partialJson: "",
 							index: event.index,
 						};
@@ -347,7 +380,7 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 						const block = blocks[index];
 						if (block && block.type === "toolCall") {
 							block.partialJson += event.delta.partial_json;
-							block.arguments = parseStreamingJson(block.partialJson);
+							block.arguments = parseStreamingJson<Record<string, unknown>>(block.partialJson);
 							stream.push({
 								type: "toolcall_delta",
 								contentIndex: index,
@@ -383,7 +416,15 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
 								partial: output,
 							});
 						} else if (block.type === "toolCall") {
-							block.arguments = parseStreamingJson(block.partialJson);
+							if (block.partialJson.trim().length > 0) {
+								const parsedInput = parseToolInputJson(block.partialJson);
+								block.arguments = parsedInput.arguments;
+								if (parsedInput.argumentsParseError) {
+									block.argumentsParseError = parsedInput.argumentsParseError;
+								} else {
+									delete block.argumentsParseError;
+								}
+							}
 							// Finalize in-place and strip the scratch buffer so replay only
 							// carries parsed arguments.
 							delete (block as { partialJson?: string }).partialJson;
