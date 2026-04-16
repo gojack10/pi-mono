@@ -279,6 +279,45 @@ export function convertResponsesTools(tools: Tool[], options?: ConvertResponsesT
 // Stream processing
 // =============================================================================
 
+function parseUsage<TApi extends Api>(
+	rawUsage: {
+		input_tokens?: number;
+		input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number };
+		output_tokens?: number;
+		output_tokens_details: { reasoning_tokens: number };
+	},
+	model: Model<TApi>,
+): AssistantMessage["usage"] {
+	const inputTokens = rawUsage.input_tokens || 0;
+	const reportedCachedTokens = rawUsage.input_tokens_details?.cached_tokens || 0;
+	const cacheWriteTokens = rawUsage.input_tokens_details?.cache_write_tokens || 0;
+	const reasoningTokens = rawUsage.output_tokens_details?.reasoning_tokens || 0;
+
+	// Normalize to pi-ai semantics:
+	// - cacheRead: hits from cache created by previous requests only
+	// - cacheWrite: tokens written to cache in this request
+	// Some OpenAI-compatible providers (observed on OpenRouter) report cached_tokens
+	// as (previous hits + current writes). In that case, remove cacheWrite from cacheRead.
+	const cacheReadTokens =
+		cacheWriteTokens > 0 ? Math.max(0, reportedCachedTokens - cacheWriteTokens) : reportedCachedTokens;
+
+	const input = Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
+	// Compute totalTokens ourselves since we add reasoning_tokens to output
+	// and some providers (e.g., Groq) don't include them in total_tokens
+	const outputTokens = (rawUsage.output_tokens || 0) + reasoningTokens;
+	const usage: AssistantMessage["usage"] = {
+		input,
+		output: outputTokens,
+		cacheRead: cacheReadTokens,
+		cacheWrite: cacheWriteTokens,
+		totalTokens: input + outputTokens + cacheReadTokens + cacheWriteTokens,
+		// Initialize as zeros, but we populate this through calculateCost() below
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	calculateCost(model, usage);
+	return usage;
+}
+
 export async function processResponsesStream<TApi extends Api>(
 	openaiStream: AsyncIterable<ResponseStreamEvent>,
 	output: AssistantMessage,
@@ -474,22 +513,12 @@ export async function processResponsesStream<TApi extends Api>(
 			}
 		} else if (event.type === "response.completed") {
 			const response = event.response;
-			if (response?.id) {
+			if (response.id) {
 				output.responseId = response.id;
 			}
-			if (response?.usage) {
-				const cachedTokens = response.usage.input_tokens_details?.cached_tokens || 0;
-				output.usage = {
-					// OpenAI includes cached tokens in input_tokens, so subtract to get non-cached input
-					input: (response.usage.input_tokens || 0) - cachedTokens,
-					output: response.usage.output_tokens || 0,
-					cacheRead: cachedTokens,
-					cacheWrite: 0,
-					totalTokens: response.usage.total_tokens || 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				};
+			if (response.usage) {
+				output.usage = parseUsage(response.usage, model);
 			}
-			calculateCost(model, output.usage);
 			if (options?.applyServiceTierPricing) {
 				const serviceTier = response?.service_tier ?? options.serviceTier;
 				options.applyServiceTierPricing(output.usage, serviceTier);

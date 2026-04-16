@@ -59,6 +59,25 @@ async function* createFunctionCallEvents(argumentsJson: string): AsyncIterable<R
 	} as ResponseStreamEvent;
 }
 
+async function* createUsageEvents(): AsyncIterable<ResponseStreamEvent> {
+	yield {
+		type: "response.completed",
+		response: {
+			status: "completed",
+			usage: {
+				input_tokens: 100,
+				output_tokens: 20,
+				total_tokens: 120,
+				input_tokens_details: {
+					cached_tokens: 70,
+					cache_write_tokens: 30,
+				},
+				output_tokens_details: { reasoning_tokens: 0 },
+			},
+		},
+	} as unknown as ResponseStreamEvent;
+}
+
 describe("openai responses partialJson cleanup", () => {
 	it("removes partialJson from persisted tool-call blocks at output_item.done", async () => {
 		const model: Model<"openai-responses"> = {
@@ -97,5 +116,30 @@ describe("openai responses partialJson cleanup", () => {
 		}
 		expect(toolCallEnd.toolCall).toBe(persistedToolCall);
 		expect("partialJson" in toolCallEnd.toolCall).toBe(false);
+	});
+
+	it("parses cache_write_tokens from response usage", async () => {
+		const model: Model<"openai-responses"> = {
+			id: "gpt-5-mini",
+			name: "GPT-5 Mini",
+			api: "openai-responses",
+			provider: "openai",
+			baseUrl: "https://api.openai.com/v1",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+		const output = createOutput(model);
+		const stream = new AssistantMessageEventStream();
+
+		await processResponsesStream(createUsageEvents(), output, stream, model);
+
+		expect(output.usage.input).toBe(30);
+		expect(output.usage.output).toBe(20);
+		expect(output.usage.cacheRead).toBe(40);
+		expect(output.usage.cacheWrite).toBe(30);
+		expect(output.usage.totalTokens).toBe(120);
 	});
 });
