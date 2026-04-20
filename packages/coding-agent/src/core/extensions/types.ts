@@ -448,7 +448,7 @@ type AnyToolDefinition = ToolDefinition<any, any, any>;
 export function defineTool<TParams extends TSchema, TDetails = unknown, TState = any>(
 	tool: ToolDefinition<TParams, TDetails, TState>,
 ): ToolDefinition<TParams, TDetails, TState> & AnyToolDefinition {
-	return tool;
+	return tool as ToolDefinition<TParams, TDetails, TState> & AnyToolDefinition;
 }
 
 // ============================================================================

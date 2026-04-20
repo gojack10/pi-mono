@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ToolCall } from "../src/types.js";
+import type { Tool, ToolCall } from "../src/types.js";
 import { validateToolArguments } from "../src/utils/validation.js";
 
 afterEach(() => {
@@ -35,5 +35,37 @@ describe("validateToolArguments", () => {
 		} finally {
 			globalThis.Function = originalFunction;
 		}
+	});
+
+	it("coerces serialized plain JSON schemas like AJV did", () => {
+		const serializedSchema = JSON.parse(
+			JSON.stringify(
+				Type.Object({
+					count: Type.Number(),
+					enabled: Type.Boolean(),
+				}),
+			),
+		) as Tool["parameters"];
+
+		const tool: Tool = {
+			name: "echo",
+			description: "Echo tool",
+			parameters: serializedSchema,
+		};
+
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "tool-2",
+			name: "echo",
+			arguments: {
+				count: "42",
+				enabled: "true",
+			},
+		};
+
+		expect(validateToolArguments(tool, toolCall)).toEqual({
+			count: 42,
+			enabled: true,
+		});
 	});
 });

@@ -20,6 +20,7 @@ import {
 	type ToolConfiguration,
 	ToolResultStatus,
 } from "@aws-sdk/client-bedrock-runtime";
+import type { DocumentType } from "@smithy/types";
 import { calculateCost } from "../models.js";
 import type {
 	Api,
@@ -749,7 +750,7 @@ function convertToolConfig(
 		toolSpec: {
 			name: tool.name,
 			description: tool.description,
-			inputSchema: { json: tool.parameters },
+			inputSchema: { json: tool.parameters as unknown as DocumentType },
 		},
 	}));
 
