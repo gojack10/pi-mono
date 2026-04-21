@@ -18,11 +18,11 @@ import {
 	type SimpleStreamOptions,
 } from "@mariozechner/pi-ai";
 import { registerOAuthProvider, resetOAuthProviders } from "@mariozechner/pi-ai/oauth";
-import { type Static, Type } from "@sinclair/typebox";
-import { Compile } from "@sinclair/typebox/compile";
-import type { TLocalizedValidationError } from "@sinclair/typebox/error";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { type Static, Type } from "typebox";
+import { Compile } from "typebox/compile";
+import type { TLocalizedValidationError } from "typebox/error";
 import { getAgentDir } from "../config.js";
 import type { AuthStorage } from "./auth-storage.js";
 import {

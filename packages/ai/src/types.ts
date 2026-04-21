@@ -222,7 +222,7 @@ export interface ToolResultMessage<TDetails = any> {
 
 export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 
-import type { TSchema } from "@sinclair/typebox";
+import type { TSchema } from "typebox";
 
 export interface Tool<TParameters extends TSchema = TSchema> {
 	name: string;

@@ -1,32 +1,7 @@
-import { Compile } from "@sinclair/typebox/compile";
-import type { TLocalizedValidationError } from "@sinclair/typebox/error";
-import { Value } from "@sinclair/typebox/value";
+import { Compile } from "typebox/compile";
+import type { TLocalizedValidationError } from "typebox/error";
+import { Value } from "typebox/value";
 import type { Tool, ToolCall } from "../types.js";
-
-// Detect if we're in a browser extension environment with strict CSP
-// Chrome extensions with Manifest V3 don't allow eval/Function constructor
-type BrowserLikeGlobal = typeof globalThis & {
-	chrome?: {
-		runtime?: {
-			id?: string;
-		};
-	};
-};
-
-const isBrowserExtension = (globalThis as BrowserLikeGlobal).chrome?.runtime?.id !== undefined;
-
-function canUseRuntimeCodegen(): boolean {
-	if (isBrowserExtension) {
-		return false;
-	}
-
-	try {
-		new Function("return true;");
-		return true;
-	} catch {
-		return false;
-	}
-}
 
 const validatorCache = new WeakMap<object, ReturnType<typeof Compile>>();
 const TYPEBOX_KIND = Symbol.for("TypeBox.Kind");
@@ -63,6 +38,27 @@ function getSchemaTypes(schema: JsonSchemaObject): string[] {
 	return [];
 }
 
+function matchesJsonType(value: unknown, type: string): boolean {
+	switch (type) {
+		case "number":
+			return typeof value === "number";
+		case "integer":
+			return typeof value === "number" && Number.isInteger(value);
+		case "boolean":
+			return typeof value === "boolean";
+		case "string":
+			return typeof value === "string";
+		case "null":
+			return value === null;
+		case "array":
+			return Array.isArray(value);
+		case "object":
+			return isRecord(value) && !Array.isArray(value);
+		default:
+			return false;
+	}
+}
+
 function isValidatorSchema(value: unknown): value is Tool["parameters"] {
 	return isRecord(value);
 }
@@ -81,6 +77,9 @@ function getSubSchemaValidator(schema: JsonSchemaObject): ReturnType<typeof Comp
 function coercePrimitiveByType(value: unknown, type: string): unknown {
 	switch (type) {
 		case "number": {
+			if (value === null) {
+				return 0;
+			}
 			if (typeof value === "string" && value.trim() !== "") {
 				const parsed = Number(value);
 				if (Number.isFinite(parsed)) {
@@ -93,6 +92,9 @@ function coercePrimitiveByType(value: unknown, type: string): unknown {
 			return value;
 		}
 		case "integer": {
+			if (value === null) {
+				return 0;
+			}
 			if (typeof value === "string" && value.trim() !== "") {
 				const parsed = Number(value);
 				if (Number.isInteger(parsed)) {
@@ -105,11 +107,14 @@ function coercePrimitiveByType(value: unknown, type: string): unknown {
 			return value;
 		}
 		case "boolean": {
+			if (value === null) {
+				return false;
+			}
 			if (typeof value === "string") {
-				if (value === "true" || value === "1") {
+				if (value === "true") {
 					return true;
 				}
-				if (value === "false" || value === "0") {
+				if (value === "false") {
 					return false;
 				}
 			}
@@ -124,13 +129,16 @@ function coercePrimitiveByType(value: unknown, type: string): unknown {
 			return value;
 		}
 		case "string": {
+			if (value === null) {
+				return "";
+			}
 			if (typeof value === "number" || typeof value === "boolean") {
 				return String(value);
 			}
 			return value;
 		}
 		case "null": {
-			if (value === "null") {
+			if (value === "" || value === 0 || value === false) {
 				return null;
 			}
 			return value;
@@ -212,7 +220,9 @@ function coerceWithJsonSchema(value: unknown, schema: JsonSchemaObject): unknown
 	}
 
 	const schemaTypes = getSchemaTypes(schema);
-	if (schemaTypes.length > 0) {
+	const matchesUnionMember =
+		schemaTypes.length > 1 && schemaTypes.some((schemaType) => matchesJsonType(nextValue, schemaType));
+	if (schemaTypes.length > 0 && !matchesUnionMember) {
 		for (const schemaType of schemaTypes) {
 			const candidate = coercePrimitiveByType(nextValue, schemaType);
 			if (candidate !== nextValue) {
@@ -280,11 +290,6 @@ export function validateToolCall(tools: Tool[], toolCall: ToolCall): any {
  * @throws Error with formatted message if validation fails
  */
 export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
-	// Keep historical behavior in contexts where runtime code generation is unavailable.
-	if (!canUseRuntimeCodegen()) {
-		return toolCall.arguments;
-	}
-
 	const args = structuredClone(toolCall.arguments);
 	Value.Convert(tool.parameters, args);
 

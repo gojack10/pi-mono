@@ -18,7 +18,7 @@
 	},
 	"dependencies": {
 		"@mariozechner/pi-ai": "^0.68.0",
-		"@sinclair/typebox": "npm:typebox@^1.1.24"
+		"typebox": "^1.1.24"
 	},
 	"keywords": [
 		"ai",

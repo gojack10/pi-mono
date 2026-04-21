@@ -38,7 +38,7 @@ import type {
 	OverlayOptions,
 	TUI,
 } from "@mariozechner/pi-tui";
-import type { Static, TSchema } from "@sinclair/typebox";
+import type { Static, TSchema } from "typebox";
 import type { Theme } from "../../modes/interactive/theme/theme.js";
 import type { BashResult } from "../bash-executor.js";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.js";

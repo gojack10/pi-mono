@@ -1,4 +1,4 @@
-import { Code, Compile, Validator } from "@sinclair/typebox/compile";
+import { Code, Compile, Validator } from "typebox/compile";
 
 export { Code, Compile, Validator };
 

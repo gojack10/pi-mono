@@ -1,10 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { EditorTheme, MarkdownTheme, SelectListTheme } from "@mariozechner/pi-tui";
-import { type Static, Type } from "@sinclair/typebox";
-import { Compile } from "@sinclair/typebox/compile";
 import chalk from "chalk";
 import { highlight, supportsLanguage } from "cli-highlight";
+import { type Static, Type } from "typebox";
+import { Compile } from "typebox/compile";
 import { getCustomThemesDir, getThemesDir } from "../../../config.js";
 import type { SourceInfo } from "../../../core/source-info.js";
 

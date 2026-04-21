@@ -18,9 +18,9 @@ import * as _bundledPiTui from "@mariozechner/pi-tui";
 // Static imports of packages that extensions may use.
 // These MUST be static so Bun bundles them into the compiled binary.
 // The virtualModules option then makes them available to extensions.
-import * as _bundledTypebox from "@sinclair/typebox";
-import * as _bundledTypeboxCompile from "@sinclair/typebox/compile";
-import * as _bundledTypeboxValue from "@sinclair/typebox/value";
+import * as _bundledTypebox from "typebox";
+import * as _bundledTypeboxCompile from "typebox/compile";
+import * as _bundledTypeboxValue from "typebox/value";
 import { getAgentDir, isBunBinary } from "../../config.js";
 // NOTE: This import works because loader.ts exports are NOT re-exported from index.ts,
 // avoiding a circular dependency. Extensions can import from @mariozechner/pi-coding-agent.
@@ -44,14 +44,14 @@ import type {
 
 /** Modules available to extensions via virtualModules (for compiled Bun binary) */
 const VIRTUAL_MODULES: Record<string, unknown> = {
-	"@sinclair/typebox": _bundledTypebox,
-	"@sinclair/typebox/compile": _bundledTypeboxCompile,
-	"@sinclair/typebox/value": _bundledTypeboxValue,
-	"@sinclair/typebox/compiler": _bundledTypeboxCompilerCompat,
 	typebox: _bundledTypebox,
 	"typebox/compile": _bundledTypeboxCompile,
 	"typebox/value": _bundledTypeboxValue,
 	"typebox/compiler": _bundledTypeboxCompilerCompat,
+	"@sinclair/typebox": _bundledTypebox,
+	"@sinclair/typebox/compile": _bundledTypeboxCompile,
+	"@sinclair/typebox/value": _bundledTypeboxValue,
+	"@sinclair/typebox/compiler": _bundledTypeboxCompilerCompat,
 	"@mariozechner/pi-agent-core": _bundledPiAgentCore,
 	"@mariozechner/pi-tui": _bundledPiTui,
 	"@mariozechner/pi-ai": _bundledPiAi,
@@ -81,9 +81,9 @@ function getAliases(): Record<string, string> {
 	const __dirname = path.dirname(fileURLToPath(import.meta.url));
 	const packageIndex = path.resolve(__dirname, "../..", "index.js");
 
-	const typeboxEntry = require.resolve("@sinclair/typebox");
-	const typeboxCompileEntry = require.resolve("@sinclair/typebox/compile");
-	const typeboxValueEntry = require.resolve("@sinclair/typebox/value");
+	const typeboxEntry = require.resolve("typebox");
+	const typeboxCompileEntry = require.resolve("typebox/compile");
+	const typeboxValueEntry = require.resolve("typebox/value");
 	const typeboxCompilerCompat = resolveTypeboxCompilerCompatPath(__dirname);
 
 	const packagesRoot = path.resolve(__dirname, "../../../../");
@@ -101,14 +101,14 @@ function getAliases(): Record<string, string> {
 		"@mariozechner/pi-tui": resolveWorkspaceOrImport("tui/dist/index.js", "@mariozechner/pi-tui"),
 		"@mariozechner/pi-ai": resolveWorkspaceOrImport("ai/dist/index.js", "@mariozechner/pi-ai"),
 		"@mariozechner/pi-ai/oauth": resolveWorkspaceOrImport("ai/dist/oauth.js", "@mariozechner/pi-ai/oauth"),
-		"@sinclair/typebox": typeboxEntry,
-		"@sinclair/typebox/compile": typeboxCompileEntry,
-		"@sinclair/typebox/value": typeboxValueEntry,
-		"@sinclair/typebox/compiler": typeboxCompilerCompat,
 		typebox: typeboxEntry,
 		"typebox/compile": typeboxCompileEntry,
 		"typebox/value": typeboxValueEntry,
 		"typebox/compiler": typeboxCompilerCompat,
+		"@sinclair/typebox": typeboxEntry,
+		"@sinclair/typebox/compile": typeboxCompileEntry,
+		"@sinclair/typebox/value": typeboxValueEntry,
+		"@sinclair/typebox/compiler": typeboxCompilerCompat,
 	};
 
 	return _aliases;
