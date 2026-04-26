@@ -54,6 +54,7 @@ import {
 	getDebugLogPath,
 	getDocsPath,
 	getShareViewerUrl,
+	isBunBinary,
 	VERSION,
 } from "../../config.js";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.js";
@@ -71,7 +72,7 @@ import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.js";
 import { createCompactionSummaryMessage } from "../../core/messages.js";
 import { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScope } from "../../core/model-resolver.js";
-import { DefaultPackageManager } from "../../core/package-manager.js";
+import { DefaultPackageManager, type PackageUpdate } from "../../core/package-manager.js";
 import type { ResourceDiagnostic } from "../../core/resource-loader.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
@@ -79,6 +80,13 @@ import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.js";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
+import {
+	canSelfUpdate,
+	checkForNewVersion,
+	getSelfUpdateDisplay,
+	getSelfUpdateUnavailableMessage,
+	installSelfUpdate,
+} from "../../core/update.js";
 import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/changelog.js";
 import { copyToClipboard } from "../../utils/clipboard.js";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.js";
@@ -138,6 +146,13 @@ interface Expandable {
 function isExpandable(obj: unknown): obj is Expandable {
 	return typeof obj === "object" && obj !== null && "setExpanded" in obj && typeof obj.setExpanded === "function";
 }
+
+type UpdateTarget = { type: "all" } | { type: "self" } | { type: "extensions"; source?: string };
+
+type UpdatePlan = {
+	newVersion?: string;
+	packages: Array<Pick<PackageUpdate, "source" | "displayName">>;
+};
 
 class ExpandableText extends Text implements Expandable {
 	constructor(
@@ -272,6 +287,9 @@ export class InteractiveMode {
 	private changelogMarkdown: string | undefined = undefined;
 	private startupNoticesShown = false;
 	private anthropicSubscriptionWarningShown = false;
+	private pendingUpdatePlan: UpdatePlan | undefined = undefined;
+	private restartPending = false;
+	private restartPromptVisible = false;
 
 	// Status line tracking (for mutating immediately-sequential status updates)
 	private lastStatusSpacer: Spacer | undefined = undefined;
@@ -706,19 +724,7 @@ export class InteractiveMode {
 	async run(): Promise<void> {
 		await this.init();
 
-		// Start version check asynchronously
-		this.checkForNewVersion().then((newVersion) => {
-			if (newVersion) {
-				this.showNewVersionNotification(newVersion);
-			}
-		});
-
-		// Start package update check asynchronously
-		this.checkForPackageUpdates().then((updates) => {
-			if (updates.length > 0) {
-				this.showPackageUpdateNotification(updates);
-			}
-		});
+		void this.handleStartupUpdates();
 
 		// Check tmux keyboard setup asynchronously
 		this.checkTmuxKeyboardSetup().then((warning) => {
@@ -778,47 +784,95 @@ export class InteractiveMode {
 		}
 	}
 
-	/**
-	 * Check npm registry for a newer version.
-	 */
-	private async checkForNewVersion(): Promise<string | undefined> {
-		if (process.env.PI_SKIP_VERSION_CHECK || process.env.PI_OFFLINE) return undefined;
+	private hasUpdates(plan: UpdatePlan): boolean {
+		return plan.newVersion !== undefined || plan.packages.length > 0;
+	}
+
+	private createPackageManager(): DefaultPackageManager {
+		const packageManager = new DefaultPackageManager({
+			cwd: this.sessionManager.getCwd(),
+			agentDir: getAgentDir(),
+			settingsManager: this.settingsManager,
+		});
+		packageManager.setProgressCallback((event) => {
+			if (event.type === "start" && event.message) {
+				this.showStatus(event.message);
+			}
+		});
+		return packageManager;
+	}
+
+	private async checkForUpdatePlan(): Promise<UpdatePlan> {
+		const [newVersion, packages] = await Promise.all([
+			checkForNewVersion(this.version).catch(() => undefined),
+			this.checkForPackageUpdates(),
+		]);
+		return { newVersion, packages };
+	}
+
+	private async handleStartupUpdates(): Promise<void> {
+		const mode = this.settingsManager.getAutoUpdate();
+		if (mode === "disabled") return;
+
+		const plan = await this.checkForUpdatePlan();
+		if (!this.hasUpdates(plan)) return;
+
+		this.pendingUpdatePlan = plan;
+		if (mode === "check-on-startup") {
+			this.showUpdateAvailableNotification(plan);
+			return;
+		}
 
 		try {
-			const response = await fetch("https://registry.npmjs.org/@mariozechner/pi-coding-agent/latest", {
-				signal: AbortSignal.timeout(10000),
-			});
-			if (!response.ok) return undefined;
-
-			const data = (await response.json()) as { version?: string };
-			const latestVersion = data.version;
-
-			if (latestVersion && latestVersion !== this.version) {
-				return latestVersion;
+			if (await this.installUpdatePlan(plan, { type: "all" })) {
+				this.restartPending = true;
+				this.showUpdateInstalledNotification(plan);
+				this.offerRestartPopover();
 			}
-
-			return undefined;
-		} catch {
-			return undefined;
+		} catch (error) {
+			this.showWarning(error instanceof Error ? error.message : String(error));
 		}
 	}
 
-	private async checkForPackageUpdates(): Promise<string[]> {
-		if (process.env.PI_OFFLINE) {
-			return [];
-		}
+	private async checkForPackageUpdates(): Promise<PackageUpdate[]> {
+		if (process.env.PI_OFFLINE) return [];
 
 		try {
-			const packageManager = new DefaultPackageManager({
-				cwd: this.sessionManager.getCwd(),
-				agentDir: getAgentDir(),
-				settingsManager: this.settingsManager,
-			});
-			const updates = await packageManager.checkForAvailableUpdates();
-			return updates.map((update) => update.displayName);
+			return await this.createPackageManager().checkForAvailableUpdates();
 		} catch {
 			return [];
 		}
+	}
+
+	private async installUpdatePlan(
+		plan: UpdatePlan,
+		target: UpdateTarget,
+		forcePackageUpdate = false,
+	): Promise<boolean> {
+		let installed = false;
+
+		if (target.type === "all" || target.type === "extensions") {
+			const source = target.type === "extensions" ? target.source : undefined;
+			if (source || plan.packages.length > 0 || forcePackageUpdate) {
+				await this.createPackageManager().update(source);
+				installed = source !== undefined || plan.packages.length > 0;
+			}
+		}
+
+		if ((target.type === "all" || target.type === "self") && plan.newVersion) {
+			if (!canSelfUpdate()) {
+				if (installed) {
+					this.showWarning(getSelfUpdateUnavailableMessage());
+					return installed;
+				}
+				throw new Error(getSelfUpdateUnavailableMessage());
+			}
+			this.showStatus(`Updating ${APP_NAME} to ${plan.newVersion} with ${getSelfUpdateDisplay()}...`);
+			await installSelfUpdate("ignore");
+			installed = true;
+		}
+
+		return installed;
 	}
 
 	private async checkTmuxKeyboardSetup(): Promise<string | undefined> {
@@ -2570,6 +2624,11 @@ export class InteractiveMode {
 				await this.handleCompactCommand(customInstructions);
 				return;
 			}
+			if (text === "/update" || text.startsWith("/update ")) {
+				this.editor.setText("");
+				await this.handleUpdateCommand(text.startsWith("/update ") ? text.slice(8).trim() : "");
+				return;
+			}
 			if (text === "/reload") {
 				this.editor.setText("");
 				await this.handleReloadCommand();
@@ -2854,6 +2913,7 @@ export class InteractiveMode {
 				this.pendingTools.clear();
 
 				await this.checkShutdownRequested();
+				this.offerRestartPopover();
 
 				this.ui.requestRender();
 				break;
@@ -3513,20 +3573,30 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	showNewVersionNotification(newVersion: string): void {
-		const action = theme.fg("accent", `${APP_NAME} update`);
-		const updateInstruction = theme.fg("muted", `New version ${newVersion} is available. Run `) + action;
+	private getUpdatePlanLines(plan: UpdatePlan): string[] {
+		const lines: string[] = [];
+		if (plan.newVersion) lines.push(`${APP_NAME} ${plan.newVersion}`);
+		lines.push(...plan.packages.map((pkg) => pkg.displayName));
+		return lines;
+	}
+
+	showUpdateAvailableNotification(plan: UpdatePlan): void {
+		const action = theme.fg("accent", "/update");
+		const shellAction = theme.fg("accent", `${APP_NAME} update`);
+		const instruction = theme.fg("muted", "Run ") + action + theme.fg("muted", " now, or ") + shellAction;
+		const updateLines = this.getUpdatePlanLines(plan)
+			.map((line) => `- ${line}`)
+			.join("\n");
 		const changelogUrl = theme.fg(
 			"accent",
 			"https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md",
 		);
-		const changelogLine = theme.fg("muted", "Changelog: ") + changelogUrl;
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
 		this.chatContainer.addChild(
 			new Text(
-				`${theme.bold(theme.fg("warning", "Update Available"))}\n${updateInstruction}\n${changelogLine}`,
+				`${theme.bold(theme.fg("warning", "Updates Available"))}\n${instruction}\n${theme.fg("muted", "Updates:")}\n${updateLines}\n${theme.fg("muted", "Changelog: ")}${changelogUrl}`,
 				1,
 				0,
 			),
@@ -3535,21 +3605,22 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	showPackageUpdateNotification(packages: string[]): void {
-		const action = theme.fg("accent", `${APP_NAME} update`);
-		const updateInstruction = theme.fg("muted", "Package updates are available. Run ") + action;
-		const packageLines = packages.map((pkg) => `- ${pkg}`).join("\n");
+	showUpdateInstalledNotification(plan: UpdatePlan): void {
+		const updateLines = this.getUpdatePlanLines(plan)
+			.map((line) => `- ${line}`)
+			.join("\n");
+		const restart = theme.fg("muted", "Restart pi to use the installed update. Run ") + theme.fg("accent", "/update");
 
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("success", text)));
 		this.chatContainer.addChild(
 			new Text(
-				`${theme.bold(theme.fg("warning", "Package Updates Available"))}\n${updateInstruction}\n${theme.fg("muted", "Packages:")}\n${packageLines}`,
+				`${theme.bold(theme.fg("success", "Update Installed"))}\n${restart}\n${theme.fg("muted", "Installed:")}\n${updateLines}`,
 				1,
 				0,
 			),
 		);
-		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("warning", text)));
+		this.chatContainer.addChild(new DynamicBorder((text) => theme.fg("success", text)));
 		this.ui.requestRender();
 	}
 
@@ -3780,6 +3851,7 @@ export class InteractiveMode {
 					editorPaddingX: this.settingsManager.getEditorPaddingX(),
 					autocompleteMaxVisible: this.settingsManager.getAutocompleteMaxVisible(),
 					quietStartup: this.settingsManager.getQuietStartup(),
+					autoUpdate: this.settingsManager.getAutoUpdate(),
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
 					showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
 				},
@@ -3863,6 +3935,9 @@ export class InteractiveMode {
 					},
 					onQuietStartupChange: (enabled) => {
 						this.settingsManager.setQuietStartup(enabled);
+					},
+					onAutoUpdateChange: (mode) => {
+						this.settingsManager.setAutoUpdate(mode);
 					},
 					onDoubleEscapeActionChange: (action) => {
 						this.settingsManager.setDoubleEscapeAction(action);
@@ -4740,6 +4815,175 @@ export class InteractiveMode {
 	// =========================================================================
 	// Command handlers
 	// =========================================================================
+
+	private parseUpdateTarget(input: string): { target?: UpdateTarget; error?: string } {
+		const args = input ? input.split(/\s+/) : [];
+		let source: string | undefined;
+		let self = false;
+		let extensions = false;
+		let extensionSource: string | undefined;
+
+		for (let i = 0; i < args.length; i++) {
+			const arg = args[i];
+			if (arg === "--self") {
+				self = true;
+			} else if (arg === "--extensions") {
+				extensions = true;
+			} else if (arg === "--extension") {
+				extensionSource = args[++i];
+				if (!extensionSource || extensionSource.startsWith("-")) return { error: "Missing value for --extension" };
+			} else if (arg.startsWith("-")) {
+				return { error: `Unknown option ${arg}` };
+			} else if (!source) {
+				source = arg;
+			} else {
+				return { error: `Unexpected argument ${arg}` };
+			}
+		}
+
+		if (extensionSource) {
+			if (source || self || extensions) return { error: "--extension cannot be combined with other targets" };
+			return { target: { type: "extensions", source: extensionSource } };
+		}
+		if (source === "pi" || source === "self") return { target: extensions ? { type: "all" } : { type: "self" } };
+		if (source) {
+			if (self || extensions) return { error: "positional update targets cannot be combined with flags" };
+			return { target: { type: "extensions", source } };
+		}
+		if (self && !extensions) return { target: { type: "self" } };
+		if (extensions && !self) return { target: { type: "extensions" } };
+		return { target: { type: "all" } };
+	}
+
+	private targetIncludesSelf(target: UpdateTarget): boolean {
+		return target.type === "all" || target.type === "self";
+	}
+
+	private targetIncludesPackages(target: UpdateTarget): boolean {
+		return target.type === "all" || target.type === "extensions";
+	}
+
+	private async getUpdatePlan(target: UpdateTarget): Promise<UpdatePlan> {
+		const [newVersion, packages] = await Promise.all([
+			this.targetIncludesSelf(target) ? checkForNewVersion(this.version) : undefined,
+			this.targetIncludesPackages(target) && !(target.type === "extensions" && target.source)
+				? this.checkForPackageUpdates()
+				: Promise.resolve([]),
+		]);
+		return { newVersion, packages };
+	}
+
+	private getInstalledUpdatePlan(plan: UpdatePlan, target: UpdateTarget): UpdatePlan {
+		if (target.type === "extensions" && target.source && plan.packages.length === 0) {
+			return { ...plan, packages: [{ source: target.source, displayName: target.source }] };
+		}
+		return plan;
+	}
+
+	private async offerRestartDialog(): Promise<void> {
+		if (await this.showExtensionConfirm("Update installed", "Restart pi now?")) {
+			await this.restartPi();
+		}
+	}
+
+	private offerRestartPopover(): void {
+		if (
+			this.restartPromptVisible ||
+			!this.restartPending ||
+			this.session.isStreaming ||
+			this.session.isCompacting ||
+			this.session.isBashRunning ||
+			this.editor.getText().trim() ||
+			this.ui.hasOverlay()
+		) {
+			return;
+		}
+
+		this.restartPromptVisible = true;
+		let handle: OverlayHandle | undefined;
+		let selector: ExtensionSelectorComponent | undefined;
+		const close = (restart: boolean) => {
+			handle?.hide();
+			selector?.dispose();
+			this.restartPromptVisible = false;
+			if (restart) void this.restartPi();
+		};
+		selector = new ExtensionSelectorComponent(
+			"Update installed. Restart pi now?",
+			["Restart", "Later"],
+			(option) => close(option === "Restart"),
+			() => close(false),
+			{ tui: this.ui },
+		);
+		handle = this.ui.showOverlay(selector, { width: 48, anchor: "bottom-center", margin: { bottom: 2 } });
+		this.ui.requestRender();
+	}
+
+	private async restartPi(): Promise<void> {
+		const sessionFile = this.sessionManager.getSessionFile();
+		const cwd = this.sessionManager.getCwd();
+		const restartArgs = sessionFile ? ["--session", sessionFile] : [];
+		const entrypoint = process.argv[1];
+		const command = isBunBinary || !entrypoint ? (isBunBinary ? process.execPath : APP_NAME) : process.execPath;
+		const args = isBunBinary || !entrypoint ? restartArgs : [entrypoint, ...restartArgs];
+
+		this.isShuttingDown = true;
+		this.unregisterSignalHandlers();
+		await this.settingsManager.flush();
+		await this.ui.terminal.drainInput(1000);
+		this.stop();
+		await this.runtimeHost.dispose();
+
+		// Keep this process alive while the replacement runs. If we exit immediately,
+		// the shell can reclaim the terminal and the child starts in the background,
+		// making setRawMode fail with EIO on macOS.
+		const exitCode = await new Promise<number>((resolve, reject) => {
+			const child = spawn(command, args, { cwd, stdio: "inherit" });
+			child.on("error", reject);
+			child.on("close", (code) => resolve(code ?? 1));
+		});
+		process.exit(exitCode);
+	}
+
+	private async handleUpdateCommand(input: string): Promise<void> {
+		if (this.session.isStreaming || this.session.isCompacting || this.session.isBashRunning) {
+			this.showWarning("Wait for current work to finish before updating.");
+			return;
+		}
+		if (this.restartPending && !input) {
+			await this.offerRestartDialog();
+			return;
+		}
+
+		const { target, error } = this.parseUpdateTarget(input);
+		if (error || !target) {
+			this.showError(error ?? "Invalid update command");
+			return;
+		}
+
+		this.showStatus("Checking for updates...");
+		const plan = !input && this.pendingUpdatePlan ? this.pendingUpdatePlan : await this.getUpdatePlan(target);
+		const runPackageUpdate = this.targetIncludesPackages(target);
+		if (!runPackageUpdate && !this.hasUpdates(plan)) {
+			this.showStatus("No updates available");
+			return;
+		}
+
+		try {
+			const installed = await this.installUpdatePlan(plan, target, true);
+			if (!installed) {
+				this.showStatus("No updates available");
+				return;
+			}
+			const installedPlan = this.getInstalledUpdatePlan(plan, target);
+			this.pendingUpdatePlan = installedPlan;
+			this.restartPending = true;
+			this.showUpdateInstalledNotification(installedPlan);
+			await this.offerRestartDialog();
+		} catch (error) {
+			this.showError(error instanceof Error ? error.message : String(error));
+		}
+	}
 
 	private async handleReloadCommand(): Promise<void> {
 		if (this.session.isStreaming) {

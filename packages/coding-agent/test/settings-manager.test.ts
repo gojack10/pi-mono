@@ -110,6 +110,20 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("auto update", () => {
+		it("defaults to checking on startup and persists changes", async () => {
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getAutoUpdate()).toBe("check-on-startup");
+			manager.setAutoUpdate("install");
+			await manager.flush();
+
+			const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
+			expect(settings.autoUpdate).toBe("install");
+			expect(SettingsManager.create(projectDir, agentDir).getAutoUpdate()).toBe("install");
+		});
+	});
+
 	describe("packages migration", () => {
 		it("should keep local-only extensions in extensions array", () => {
 			const settingsPath = join(agentDir, "settings.json");

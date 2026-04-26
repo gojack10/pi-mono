@@ -11,6 +11,7 @@ import {
 	Spacer,
 	Text,
 } from "@mariozechner/pi-tui";
+import type { AutoUpdateMode } from "../../../core/settings-manager.js";
 import { getSelectListTheme, getSettingsListTheme, theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 
@@ -27,6 +28,19 @@ const THINKING_DESCRIPTIONS: Record<ThinkingLevel, string> = {
 	high: "Deep reasoning (~16k tokens)",
 	xhigh: "Maximum reasoning (~32k tokens)",
 };
+
+const AUTO_UPDATE_LABELS: Record<AutoUpdateMode, string> = {
+	"check-on-startup": "Check on startup",
+	install: "Automatically install",
+	disabled: "Disabled",
+};
+
+const AUTO_UPDATE_MODES = ["check-on-startup", "install", "disabled"] as const;
+const AUTO_UPDATE_VALUES = AUTO_UPDATE_MODES.map((mode) => AUTO_UPDATE_LABELS[mode]);
+
+function parseAutoUpdateLabel(label: string): AutoUpdateMode {
+	return AUTO_UPDATE_MODES.find((mode) => AUTO_UPDATE_LABELS[mode] === label) ?? "check-on-startup";
+}
 
 export interface SettingsConfig {
 	autoCompact: boolean;
@@ -51,6 +65,7 @@ export interface SettingsConfig {
 	editorPaddingX: number;
 	autocompleteMaxVisible: number;
 	quietStartup: boolean;
+	autoUpdate: AutoUpdateMode;
 	clearOnShrink: boolean;
 	showTerminalProgress: boolean;
 }
@@ -77,6 +92,7 @@ export interface SettingsCallbacks {
 	onEditorPaddingXChange: (padding: number) => void;
 	onAutocompleteMaxVisibleChange: (maxVisible: number) => void;
 	onQuietStartupChange: (enabled: boolean) => void;
+	onAutoUpdateChange: (mode: AutoUpdateMode) => void;
 	onClearOnShrinkChange: (enabled: boolean) => void;
 	onShowTerminalProgressChange: (enabled: boolean) => void;
 	onCancel: () => void;
@@ -211,6 +227,13 @@ export class SettingsSelectorComponent extends Container {
 				description: "Disable verbose printing at startup",
 				currentValue: config.quietStartup ? "true" : "false",
 				values: ["true", "false"],
+			},
+			{
+				id: "auto-update",
+				label: "Auto update",
+				description: "Controls startup update checks and automatic installation",
+				currentValue: AUTO_UPDATE_LABELS[config.autoUpdate],
+				values: AUTO_UPDATE_VALUES,
 			},
 			{
 				id: "install-telemetry",
@@ -431,6 +454,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "install-telemetry":
 						callbacks.onEnableInstallTelemetryChange(newValue === "true");
+						break;
+					case "auto-update":
+						callbacks.onAutoUpdateChange(parseAutoUpdateLabel(newValue));
 						break;
 					case "double-escape-action":
 						callbacks.onDoubleEscapeActionChange(newValue as "fork" | "tree");

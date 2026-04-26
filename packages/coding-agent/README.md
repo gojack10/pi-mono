@@ -382,6 +382,7 @@ pi remove npm:@foo/pi-tools
 pi uninstall npm:@foo/pi-tools          # alias for remove
 pi list
 pi update                               # update pi and packages (skips pinned packages)
+/update                                 # same from interactive mode, then offer restart
 pi update --extensions                  # update packages only
 pi update --self                        # update pi only
 pi update npm:@foo/pi-tools             # update one package
@@ -480,6 +481,7 @@ pi install <source> [-l]     # Install package, -l for project-local
 pi remove <source> [-l]      # Remove package
 pi uninstall <source> [-l]   # Alias for remove
 pi update [source|self|pi]   # Update pi and packages (skips pinned packages)
+/update                      # Same from interactive mode, then offer restart
 pi update --extensions       # Update packages only
 pi update --self             # Update pi only
 pi update --extension <src>  # Update one package
@@ -609,6 +611,7 @@ pi --thinking high "Solve this complex problem"
 | `PI_CODING_AGENT_DIR` | Override config directory (default: `~/.pi/agent`) |
 | `PI_PACKAGE_DIR` | Override package directory (useful for Nix/Guix where store paths tokenize poorly) |
 | `PI_SKIP_VERSION_CHECK` | Skip version check at startup |
+| `PI_OFFLINE` | Disable startup network operations when set to `1`/`true`/`yes` |
 | `PI_TELEMETRY` | Override install telemetry. Use `1`/`true`/`yes` to enable or `0`/`false`/`no` to disable |
 | `PI_CACHE_RETENTION` | Set to `long` for extended prompt cache (Anthropic: 1h, OpenAI: 24h) |
 | `VISUAL`, `EDITOR` | External editor for Ctrl+G |
