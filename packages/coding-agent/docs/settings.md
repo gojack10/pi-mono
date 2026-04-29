@@ -49,6 +49,20 @@ Edit directly or use `/settings` for common options.
 | `autocompleteMaxVisible` | number | `5` | Max visible items in autocomplete dropdown (3-20) |
 | `showHardwareCursor` | boolean | `false` | Show terminal cursor |
 
+### Warnings
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `warnings.anthropicExtraUsage` | boolean | `true` | Show a warning when Anthropic subscription auth may use paid extra usage |
+
+```json
+{
+  "warnings": {
+    "anthropicExtraUsage": false
+  }
+}
+```
+
 ### Compaction
 
 | Setting | Type | Default | Description |
@@ -227,6 +241,9 @@ See [packages.md](packages.md) for package management details.
     "maxRetries": 3
   },
   "enabledModels": ["claude-*", "gpt-4o"],
+  "warnings": {
+    "anthropicExtraUsage": true
+  },
   "packages": ["pi-skills"]
 }
 ```

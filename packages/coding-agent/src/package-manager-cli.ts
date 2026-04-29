@@ -1,9 +1,10 @@
 import chalk from "chalk";
 import { selectConfig } from "./cli/config-selector.js";
-import { APP_NAME, getAgentDir, getSelfUpdateUnavailableInstruction, PACKAGE_NAME } from "./config.js";
+import { APP_NAME, getAgentDir, getSelfUpdateUnavailableInstruction, PACKAGE_NAME, VERSION } from "./config.js";
 import { DefaultPackageManager } from "./core/package-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
-import { canSelfUpdate, checkForNewVersion, getSelfUpdateDisplay, installSelfUpdate } from "./core/update.js";
+import { canSelfUpdate, getSelfUpdateDisplay, installSelfUpdate } from "./core/update.js";
+import { checkForNewPiVersion } from "./utils/version-check.js";
 
 export type PackageCommand = "install" | "remove" | "update" | "list";
 
@@ -14,6 +15,7 @@ interface PackageCommandOptions {
 	source?: string;
 	updateTarget?: UpdateTarget;
 	local: boolean;
+	force: boolean;
 	help: boolean;
 	invalidOption?: string;
 	invalidArgument?: string;
@@ -38,7 +40,7 @@ function getPackageCommandUsage(command: PackageCommand): string {
 		case "remove":
 			return `${APP_NAME} remove <source> [-l]`;
 		case "update":
-			return `${APP_NAME} update [source|self|pi] [--self] [--extensions] [--extension <source>]`;
+			return `${APP_NAME} update [source|self|pi] [--self] [--extensions] [--extension <source>] [--force]`;
 		case "list":
 			return `${APP_NAME} list`;
 	}
@@ -91,6 +93,7 @@ Options:
   --self                  Update pi only
   --extensions            Update installed packages only
   --extension <source>    Update one package only
+  --force                 Reinstall pi even if the current version is latest
 
 Short forms:
   ${APP_NAME} update                Update pi and all extensions
@@ -122,6 +125,7 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 	}
 
 	let local = false;
+	let force = false;
 	let help = false;
 	let invalidOption: string | undefined;
 	let invalidArgument: string | undefined;
@@ -160,6 +164,15 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 		if (arg === "--extensions") {
 			if (command === "update") {
 				extensionsFlag = true;
+			} else {
+				invalidOption = invalidOption ?? arg;
+			}
+			continue;
+		}
+
+		if (arg === "--force") {
+			if (command === "update") {
+				force = true;
 			} else {
 				invalidOption = invalidOption ?? arg;
 			}
@@ -234,6 +247,7 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 		source,
 		updateTarget,
 		local,
+		force,
 		help,
 		invalidOption,
 		invalidArgument,
@@ -259,6 +273,26 @@ function printSelfUpdateUnavailable(): void {
 		console.error("");
 		console.error(`Location of pi executable: ${entrypoint}`);
 	}
+}
+
+function printSelfUpdateFallback(): void {
+	const display = getSelfUpdateDisplay();
+	if (!display) return;
+	console.error(chalk.dim(`If this keeps failing, run this command yourself: ${display}`));
+}
+
+type SelfUpdatePlan = { install: true; newVersion?: string } | { install: false };
+
+async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
+	if (force) {
+		return { install: true };
+	}
+
+	const newVersion = await checkForNewPiVersion(VERSION);
+	if (!newVersion) {
+		return { install: false };
+	}
+	return { install: true, newVersion };
 }
 
 export async function handleConfigCommand(args: string[]): Promise<boolean> {
@@ -408,19 +442,34 @@ export async function handlePackageCommand(args: string[]): Promise<boolean> {
 					}
 				}
 				if (updateTargetIncludesSelf(target)) {
-					const newVersion = await checkForNewVersion();
-					if (newVersion) {
-						if (!canSelfUpdate()) {
-							printSelfUpdateUnavailable();
-							process.exitCode = 1;
-							return true;
+					const selfUpdatePlan = await getSelfUpdatePlan(options.force);
+					if (!selfUpdatePlan.install) {
+						if (target.type === "self") {
+							console.log(chalk.green(`${APP_NAME} is already up to date (v${VERSION})`));
 						}
-						console.log(chalk.dim(`Updating ${APP_NAME} to ${newVersion} with ${getSelfUpdateDisplay()}...`));
-						await installSelfUpdate("inherit");
-						console.log(chalk.green(`Updated ${APP_NAME}`));
-					} else if (target.type === "self") {
-						console.log(chalk.green(`${APP_NAME} is up to date`));
+						return true;
 					}
+
+					if (!canSelfUpdate()) {
+						printSelfUpdateUnavailable();
+						process.exitCode = 1;
+						return true;
+					}
+
+					const display = getSelfUpdateDisplay();
+					const versionText = selfUpdatePlan.newVersion ? ` to ${selfUpdatePlan.newVersion}` : "";
+					const commandText = display ? ` with ${display}` : "";
+					console.log(chalk.dim(`Updating ${APP_NAME}${versionText}${commandText}...`));
+					try {
+						await installSelfUpdate("inherit");
+					} catch (error: unknown) {
+						const message = error instanceof Error ? error.message : "Unknown package command error";
+						console.error(chalk.red(`Error: ${message}`));
+						printSelfUpdateFallback();
+						process.exitCode = 1;
+						return true;
+					}
+					console.log(chalk.green(`Updated ${APP_NAME}`));
 				}
 				return true;
 			}

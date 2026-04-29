@@ -82,7 +82,6 @@ import { isInstallTelemetryEnabled } from "../../core/telemetry.js";
 import type { TruncationResult } from "../../core/tools/truncate.js";
 import {
 	canSelfUpdate,
-	checkForNewVersion,
 	getSelfUpdateDisplay,
 	getSelfUpdateUnavailableMessage,
 	installSelfUpdate,
@@ -91,8 +90,10 @@ import { getChangelogPath, getNewEntries, parseChangelog } from "../../utils/cha
 import { copyToClipboard } from "../../utils/clipboard.js";
 import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipboard-image.js";
 import { parseGitUrl } from "../../utils/git.js";
+import { getPiUserAgent } from "../../utils/pi-user-agent.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { ensureTool } from "../../utils/tools-manager.js";
+import { checkForNewPiVersion } from "../../utils/version-check.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
@@ -197,6 +198,7 @@ const API_KEY_LOGIN_PROVIDERS: Record<string, string> = {
 	[BEDROCK_PROVIDER_ID]: "Amazon Bedrock",
 	"azure-openai-responses": "Azure OpenAI Responses",
 	cerebras: "Cerebras",
+	"cloudflare-workers-ai": "Cloudflare Workers AI",
 	deepseek: "DeepSeek",
 	fireworks: "Fireworks",
 	google: "Google Gemini",
@@ -804,7 +806,7 @@ export class InteractiveMode {
 
 	private async checkForUpdatePlan(): Promise<UpdatePlan> {
 		const [newVersion, packages] = await Promise.all([
-			checkForNewVersion(this.version).catch(() => undefined),
+			checkForNewPiVersion(this.version),
 			this.checkForPackageUpdates(),
 		]);
 		return { newVersion, packages };
@@ -962,7 +964,10 @@ export class InteractiveMode {
 			return;
 		}
 
-		void fetch(`https://pi.dev/install?version=${encodeURIComponent(version)}`, {
+		void fetch(`https://pi.dev/api/report-install?version=${encodeURIComponent(version)}`, {
+			headers: {
+				"User-Agent": getPiUserAgent(version),
+			},
 			signal: AbortSignal.timeout(5000),
 		})
 			.then(() => undefined)
@@ -3860,6 +3865,7 @@ export class InteractiveMode {
 					autoUpdate: this.settingsManager.getAutoUpdate(),
 					clearOnShrink: this.settingsManager.getClearOnShrink(),
 					showTerminalProgress: this.settingsManager.getShowTerminalProgress(),
+					warnings: this.settingsManager.getWarnings(),
 				},
 				{
 					onAutoCompactChange: (enabled) => {
@@ -3976,6 +3982,9 @@ export class InteractiveMode {
 					onShowTerminalProgressChange: (enabled) => {
 						this.settingsManager.setShowTerminalProgress(enabled);
 					},
+					onWarningsChange: (warnings) => {
+						this.settingsManager.setWarnings(warnings);
+					},
 					onCancel: () => {
 						done();
 						this.ui.requestRender();
@@ -4038,6 +4047,9 @@ export class InteractiveMode {
 	private async maybeWarnAboutAnthropicSubscriptionAuth(
 		model: Model<any> | undefined = this.session.model,
 	): Promise<void> {
+		if (this.settingsManager.getWarnings().anthropicExtraUsage === false) {
+			return;
+		}
 		if (this.anthropicSubscriptionWarningShown) {
 			return;
 		}
@@ -4871,7 +4883,7 @@ export class InteractiveMode {
 
 	private async getUpdatePlan(target: UpdateTarget): Promise<UpdatePlan> {
 		const [newVersion, packages] = await Promise.all([
-			this.targetIncludesSelf(target) ? checkForNewVersion(this.version) : undefined,
+			this.targetIncludesSelf(target) ? checkForNewPiVersion(this.version) : undefined,
 			this.targetIncludesPackages(target) && !(target.type === "extensions" && target.source)
 				? this.checkForPackageUpdates()
 				: Promise.resolve([]),
