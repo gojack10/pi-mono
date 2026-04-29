@@ -4,7 +4,7 @@ import { APP_NAME, getAgentDir, getSelfUpdateUnavailableInstruction, PACKAGE_NAM
 import { DefaultPackageManager } from "./core/package-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
 import { canSelfUpdate, getSelfUpdateDisplay, installSelfUpdate } from "./core/update.js";
-import { checkForNewPiVersion } from "./utils/version-check.js";
+import { getLatestPiVersion, isNewerPackageVersion } from "./utils/version-check.js";
 
 export type PackageCommand = "install" | "remove" | "update" | "list";
 
@@ -284,15 +284,27 @@ function printSelfUpdateFallback(): void {
 type SelfUpdatePlan = { install: true; newVersion?: string } | { install: false };
 
 async function getSelfUpdatePlan(force: boolean): Promise<SelfUpdatePlan> {
+	if (process.env.PI_OFFLINE) {
+		throw new Error(`${APP_NAME} cannot update while PI_OFFLINE is set.`);
+	}
 	if (force) {
 		return { install: true };
 	}
 
-	const newVersion = await checkForNewPiVersion(VERSION);
-	if (!newVersion) {
+	let latestVersion: string | undefined;
+	try {
+		latestVersion = await getLatestPiVersion(VERSION);
+	} catch {
+		return { install: true };
+	}
+
+	if (!latestVersion) {
+		return { install: true };
+	}
+	if (!isNewerPackageVersion(latestVersion, VERSION)) {
 		return { install: false };
 	}
-	return { install: true, newVersion };
+	return { install: true, newVersion: latestVersion };
 }
 
 export async function handleConfigCommand(args: string[]): Promise<boolean> {

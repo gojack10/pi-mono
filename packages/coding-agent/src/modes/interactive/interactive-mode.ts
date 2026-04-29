@@ -93,7 +93,7 @@ import { parseGitUrl } from "../../utils/git.js";
 import { getPiUserAgent } from "../../utils/pi-user-agent.js";
 import { killTrackedDetachedChildren } from "../../utils/shell.js";
 import { ensureTool } from "../../utils/tools-manager.js";
-import { checkForNewPiVersion } from "../../utils/version-check.js";
+import { checkForNewPiVersion, getLatestPiVersion, isNewerPackageVersion } from "../../utils/version-check.js";
 import { ArminComponent } from "./components/armin.js";
 import { AssistantMessageComponent } from "./components/assistant-message.js";
 import { BashExecutionComponent } from "./components/bash-execution.js";
@@ -151,6 +151,7 @@ function isExpandable(obj: unknown): obj is Expandable {
 type UpdateTarget = { type: "all" } | { type: "self" } | { type: "extensions"; source?: string };
 
 type UpdatePlan = {
+	selfUpdate?: boolean;
 	newVersion?: string;
 	packages: Array<Pick<PackageUpdate, "source" | "displayName">>;
 };
@@ -787,7 +788,7 @@ export class InteractiveMode {
 	}
 
 	private hasUpdates(plan: UpdatePlan): boolean {
-		return plan.newVersion !== undefined || plan.packages.length > 0;
+		return plan.selfUpdate === true || plan.newVersion !== undefined || plan.packages.length > 0;
 	}
 
 	private createPackageManager(): DefaultPackageManager {
@@ -809,7 +810,7 @@ export class InteractiveMode {
 			checkForNewPiVersion(this.version),
 			this.checkForPackageUpdates(),
 		]);
-		return { newVersion, packages };
+		return { selfUpdate: newVersion !== undefined, newVersion, packages };
 	}
 
 	private async handleStartupUpdates(): Promise<void> {
@@ -861,7 +862,7 @@ export class InteractiveMode {
 			}
 		}
 
-		if ((target.type === "all" || target.type === "self") && plan.newVersion) {
+		if ((target.type === "all" || target.type === "self") && plan.selfUpdate) {
 			if (!canSelfUpdate()) {
 				if (installed) {
 					this.showWarning(getSelfUpdateUnavailableMessage());
@@ -869,7 +870,9 @@ export class InteractiveMode {
 				}
 				throw new Error(getSelfUpdateUnavailableMessage());
 			}
-			this.showStatus(`Updating ${APP_NAME} to ${plan.newVersion} with ${getSelfUpdateDisplay()}...`);
+			const versionText = plan.newVersion ? ` to ${plan.newVersion}` : "";
+			const commandText = getSelfUpdateDisplay() ? ` with ${getSelfUpdateDisplay()}` : "";
+			this.showStatus(`Updating ${APP_NAME}${versionText}${commandText}...`);
 			await installSelfUpdate("ignore");
 			installed = true;
 		}
@@ -3586,7 +3589,7 @@ export class InteractiveMode {
 
 	private getUpdatePlanLines(plan: UpdatePlan): string[] {
 		const lines: string[] = [];
-		if (plan.newVersion) lines.push(`${APP_NAME} ${plan.newVersion}`);
+		if (plan.selfUpdate || plan.newVersion) lines.push(plan.newVersion ? `${APP_NAME} ${plan.newVersion}` : APP_NAME);
 		lines.push(...plan.packages.map((pkg) => pkg.displayName));
 		return lines;
 	}
@@ -4882,13 +4885,31 @@ export class InteractiveMode {
 	}
 
 	private async getUpdatePlan(target: UpdateTarget): Promise<UpdatePlan> {
-		const [newVersion, packages] = await Promise.all([
-			this.targetIncludesSelf(target) ? checkForNewPiVersion(this.version) : undefined,
+		if (this.targetIncludesSelf(target) && process.env.PI_OFFLINE) {
+			throw new Error(`${APP_NAME} cannot update while PI_OFFLINE is set.`);
+		}
+
+		let selfUpdate = false;
+		let newVersion: string | undefined;
+		const [latestVersion, packages] = await Promise.all([
+			this.targetIncludesSelf(target)
+				? getLatestPiVersion(this.version).catch(() => undefined)
+				: Promise.resolve(undefined),
 			this.targetIncludesPackages(target) && !(target.type === "extensions" && target.source)
 				? this.checkForPackageUpdates()
 				: Promise.resolve([]),
 		]);
-		return { newVersion, packages };
+
+		if (this.targetIncludesSelf(target)) {
+			if (!latestVersion) {
+				selfUpdate = true;
+			} else if (isNewerPackageVersion(latestVersion, this.version)) {
+				selfUpdate = true;
+				newVersion = latestVersion;
+			}
+		}
+
+		return { selfUpdate, newVersion, packages };
 	}
 
 	private getInstalledUpdatePlan(plan: UpdatePlan, target: UpdateTarget): UpdatePlan {
