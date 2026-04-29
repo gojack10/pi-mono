@@ -341,11 +341,23 @@ export function createEditToolDefinition(
 								// Check if file exists.
 								try {
 									await ops.access(absolutePath);
-								} catch {
+								} catch (error: unknown) {
 									if (signal) {
 										signal.removeEventListener("abort", onAbort);
 									}
-									reject(new Error(`File not found: ${path}`));
+									if (error instanceof Error && "code" in error) {
+										switch (error.code) {
+											case "ENOENT":
+											case "ENOTDIR":
+												reject(new Error(`File not found: ${path}`));
+												return;
+											case "EACCES":
+											case "EPERM":
+												reject(new Error(`Permission denied: ${path}`));
+												return;
+										}
+									}
+									reject(new Error(`Failed to access file: ${path}`));
 									return;
 								}
 

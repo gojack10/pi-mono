@@ -412,8 +412,18 @@ export async function computeEditsDiff(
 		// Check if file exists and is readable
 		try {
 			await access(absolutePath, constants.R_OK);
-		} catch {
-			return { error: `File not found: ${path}` };
+		} catch (error: unknown) {
+			if (error instanceof Error && "code" in error) {
+				switch (error.code) {
+					case "ENOENT":
+					case "ENOTDIR":
+						return { error: `File not found: ${path}` };
+					case "EACCES":
+					case "EPERM":
+						return { error: `Permission denied: ${path}` };
+				}
+			}
+			return { error: `Failed to access file: ${path}` };
 		}
 
 		// Read the file

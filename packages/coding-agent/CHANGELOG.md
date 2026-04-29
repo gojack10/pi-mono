@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `edit` and edit-preview access errors to report permission failures instead of incorrectly reporting write-protected files as missing ([#3894](https://github.com/badlogic/pi-mono/issues/3894)).
+
 ## [0.70.6] - 2026-04-28
 
 ### New Features

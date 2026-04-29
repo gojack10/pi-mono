@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { executeBashWithOperations } from "../src/core/bash-executor.js";
 import { createBashTool, createLocalBashOperations } from "../src/core/tools/bash.js";
+import { computeEditsDiff } from "../src/core/tools/edit-diff.js";
 import {
 	createEditTool,
 	createFindTool,
@@ -253,6 +254,17 @@ describe("Coding Agent Tools", () => {
 			).rejects.toThrow(/Could not find the exact text/);
 		});
 
+		it("should report file not found when the edit target does not exist", async () => {
+			const missingFile = join(testDir, "missing.txt");
+
+			await expect(
+				editTool.execute("test-call-6b", {
+					path: missingFile,
+					edits: [{ oldText: "hello", newText: "world" }],
+				}),
+			).rejects.toThrow(`File not found: ${missingFile}`);
+		});
+
 		it("should fail if text appears multiple times", async () => {
 			const testFile = join(testDir, "edit-test.txt");
 			const originalContent = "foo foo foo";
@@ -365,6 +377,86 @@ describe("Coding Agent Tools", () => {
 			).rejects.toThrow(/Could not find/);
 
 			expect(readFileSync(testFile, "utf-8")).toBe(originalContent);
+		});
+
+		it("should report permission denied for read-only files", async () => {
+			const testFile = join(testDir, "edit-readonly.txt");
+			writeFileSync(testFile, "hello\n");
+			chmodSync(testFile, 0o444);
+
+			await expect(
+				editTool.execute("test-call-14", {
+					path: testFile,
+					edits: [{ oldText: "hello", newText: "world" }],
+				}),
+			).rejects.toThrow(`Permission denied: ${testFile}`);
+		});
+
+		it("should report permission denied when edit access fails with EPERM", async () => {
+			const permissionDeniedTool = createEditTool(testDir, {
+				operations: {
+					access: async () => {
+						const error = new Error("operation not permitted");
+						Object.assign(error, { code: "EPERM" });
+						throw error;
+					},
+					readFile: async () => Buffer.from("hello\n", "utf-8"),
+					writeFile: async () => {},
+				},
+			});
+
+			await expect(
+				permissionDeniedTool.execute("test-call-15", {
+					path: "denied.txt",
+					edits: [{ oldText: "hello", newText: "world" }],
+				}),
+			).rejects.toThrow("Permission denied: denied.txt");
+		});
+
+		it("should report a generic access failure for unknown edit access errors", async () => {
+			const genericFailureTool = createEditTool(testDir, {
+				operations: {
+					access: async () => {
+						throw new Error("disk offline");
+					},
+					readFile: async () => Buffer.from("hello\n", "utf-8"),
+					writeFile: async () => {},
+				},
+			});
+
+			await expect(
+				genericFailureTool.execute("test-call-16", {
+					path: "broken.txt",
+					edits: [{ oldText: "hello", newText: "world" }],
+				}),
+			).rejects.toThrow("Failed to access file: broken.txt");
+		});
+
+		it("should report file not found in diff preview for missing files", async () => {
+			const missingFile = join(testDir, "missing-preview.txt");
+			const result = await computeEditsDiff(missingFile, [{ oldText: "hello", newText: "world" }], testDir);
+
+			expect(result).toEqual({ error: `File not found: ${missingFile}` });
+		});
+
+		it("should report file not found in diff preview when path component is not a directory", async () => {
+			const parentFile = join(testDir, "not-a-directory.txt");
+			writeFileSync(parentFile, "hello\n");
+			const invalidPath = join(parentFile, "child.txt");
+
+			const result = await computeEditsDiff(invalidPath, [{ oldText: "hello", newText: "world" }], testDir);
+
+			expect(result).toEqual({ error: `File not found: ${invalidPath}` });
+		});
+
+		it("should report permission denied in diff preview for unreadable files", async () => {
+			const unreadableFile = join(testDir, "unreadable-preview.txt");
+			writeFileSync(unreadableFile, "hello\n");
+			chmodSync(unreadableFile, 0o222);
+
+			const result = await computeEditsDiff(unreadableFile, [{ oldText: "hello", newText: "world" }], testDir);
+
+			expect(result).toEqual({ error: `Permission denied: ${unreadableFile}` });
 		});
 	});
 
