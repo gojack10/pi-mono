@@ -342,22 +342,12 @@ export function createEditToolDefinition(
 								try {
 									await ops.access(absolutePath);
 								} catch (error: unknown) {
+									const errorMessage =
+										error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
 									if (signal) {
 										signal.removeEventListener("abort", onAbort);
 									}
-									if (error instanceof Error && "code" in error) {
-										switch (error.code) {
-											case "ENOENT":
-											case "ENOTDIR":
-												reject(new Error(`File not found: ${path}`));
-												return;
-											case "EACCES":
-											case "EPERM":
-												reject(new Error(`Permission denied: ${path}`));
-												return;
-										}
-									}
-									reject(new Error(`Failed to access file: ${path}`));
+									reject(new Error(`Could not write file: ${path}. ${errorMessage}.`));
 									return;
 								}
 

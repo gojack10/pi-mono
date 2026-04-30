@@ -413,17 +413,8 @@ export async function computeEditsDiff(
 		try {
 			await access(absolutePath, constants.R_OK);
 		} catch (error: unknown) {
-			if (error instanceof Error && "code" in error) {
-				switch (error.code) {
-					case "ENOENT":
-					case "ENOTDIR":
-						return { error: `File not found: ${path}` };
-					case "EACCES":
-					case "EPERM":
-						return { error: `Permission denied: ${path}` };
-				}
-			}
-			return { error: `Failed to access file: ${path}` };
+			const errorMessage = error instanceof Error && "code" in error ? `Error code: ${error.code}` : String(error);
+			return { error: `Could not write file: ${path}. ${errorMessage}.` };
 		}
 
 		// Read the file

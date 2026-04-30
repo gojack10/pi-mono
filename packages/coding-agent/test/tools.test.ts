@@ -254,7 +254,7 @@ describe("Coding Agent Tools", () => {
 			).rejects.toThrow(/Could not find the exact text/);
 		});
 
-		it("should report file not found when the edit target does not exist", async () => {
+		it("should include ENOENT when the edit target does not exist", async () => {
 			const missingFile = join(testDir, "missing.txt");
 
 			await expect(
@@ -262,7 +262,7 @@ describe("Coding Agent Tools", () => {
 					path: missingFile,
 					edits: [{ oldText: "hello", newText: "world" }],
 				}),
-			).rejects.toThrow(`File not found: ${missingFile}`);
+			).rejects.toThrow(`Could not write file: ${missingFile}. Error code: ENOENT.`);
 		});
 
 		it("should fail if text appears multiple times", async () => {
@@ -379,7 +379,7 @@ describe("Coding Agent Tools", () => {
 			expect(readFileSync(testFile, "utf-8")).toBe(originalContent);
 		});
 
-		it("should report permission denied for read-only files", async () => {
+		it("should include EACCES for read-only files", async () => {
 			const testFile = join(testDir, "edit-readonly.txt");
 			writeFileSync(testFile, "hello\n");
 			chmodSync(testFile, 0o444);
@@ -389,10 +389,10 @@ describe("Coding Agent Tools", () => {
 					path: testFile,
 					edits: [{ oldText: "hello", newText: "world" }],
 				}),
-			).rejects.toThrow(`Permission denied: ${testFile}`);
+			).rejects.toThrow(`Could not write file: ${testFile}. Error code: EACCES.`);
 		});
 
-		it("should report permission denied when edit access fails with EPERM", async () => {
+		it("should include EPERM when edit access fails with EPERM", async () => {
 			const permissionDeniedTool = createEditTool(testDir, {
 				operations: {
 					access: async () => {
@@ -410,10 +410,10 @@ describe("Coding Agent Tools", () => {
 					path: "denied.txt",
 					edits: [{ oldText: "hello", newText: "world" }],
 				}),
-			).rejects.toThrow("Permission denied: denied.txt");
+			).rejects.toThrow("Could not write file: denied.txt. Error code: EPERM.");
 		});
 
-		it("should report a generic access failure for unknown edit access errors", async () => {
+		it("should include the original error message for unknown edit access errors", async () => {
 			const genericFailureTool = createEditTool(testDir, {
 				operations: {
 					access: async () => {
@@ -429,34 +429,34 @@ describe("Coding Agent Tools", () => {
 					path: "broken.txt",
 					edits: [{ oldText: "hello", newText: "world" }],
 				}),
-			).rejects.toThrow("Failed to access file: broken.txt");
+			).rejects.toThrow("Could not write file: broken.txt. Error: disk offline.");
 		});
 
-		it("should report file not found in diff preview for missing files", async () => {
+		it("should include ENOENT in diff preview for missing files", async () => {
 			const missingFile = join(testDir, "missing-preview.txt");
 			const result = await computeEditsDiff(missingFile, [{ oldText: "hello", newText: "world" }], testDir);
 
-			expect(result).toEqual({ error: `File not found: ${missingFile}` });
+			expect(result).toEqual({ error: `Could not write file: ${missingFile}. Error code: ENOENT.` });
 		});
 
-		it("should report file not found in diff preview when path component is not a directory", async () => {
+		it("should include ENOTDIR in diff preview when path component is not a directory", async () => {
 			const parentFile = join(testDir, "not-a-directory.txt");
 			writeFileSync(parentFile, "hello\n");
 			const invalidPath = join(parentFile, "child.txt");
 
 			const result = await computeEditsDiff(invalidPath, [{ oldText: "hello", newText: "world" }], testDir);
 
-			expect(result).toEqual({ error: `File not found: ${invalidPath}` });
+			expect(result).toEqual({ error: `Could not write file: ${invalidPath}. Error code: ENOTDIR.` });
 		});
 
-		it("should report permission denied in diff preview for unreadable files", async () => {
+		it("should include EACCES in diff preview for unreadable files", async () => {
 			const unreadableFile = join(testDir, "unreadable-preview.txt");
 			writeFileSync(unreadableFile, "hello\n");
 			chmodSync(unreadableFile, 0o222);
 
 			const result = await computeEditsDiff(unreadableFile, [{ oldText: "hello", newText: "world" }], testDir);
 
-			expect(result).toEqual({ error: `Permission denied: ${unreadableFile}` });
+			expect(result).toEqual({ error: `Could not write file: ${unreadableFile}. Error code: EACCES.` });
 		});
 	});
 
