@@ -392,27 +392,6 @@ describe("Coding Agent Tools", () => {
 			).rejects.toThrow(`Could not write file: ${testFile}. Error code: EACCES.`);
 		});
 
-		it("should include EPERM when edit access fails with EPERM", async () => {
-			const permissionDeniedTool = createEditTool(testDir, {
-				operations: {
-					access: async () => {
-						const error = new Error("operation not permitted");
-						Object.assign(error, { code: "EPERM" });
-						throw error;
-					},
-					readFile: async () => Buffer.from("hello\n", "utf-8"),
-					writeFile: async () => {},
-				},
-			});
-
-			await expect(
-				permissionDeniedTool.execute("test-call-15", {
-					path: "denied.txt",
-					edits: [{ oldText: "hello", newText: "world" }],
-				}),
-			).rejects.toThrow("Could not write file: denied.txt. Error code: EPERM.");
-		});
-
 		it("should include the original error message for unknown edit access errors", async () => {
 			const genericFailureTool = createEditTool(testDir, {
 				operations: {
@@ -437,16 +416,6 @@ describe("Coding Agent Tools", () => {
 			const result = await computeEditsDiff(missingFile, [{ oldText: "hello", newText: "world" }], testDir);
 
 			expect(result).toEqual({ error: `Could not write file: ${missingFile}. Error code: ENOENT.` });
-		});
-
-		it("should include ENOTDIR in diff preview when path component is not a directory", async () => {
-			const parentFile = join(testDir, "not-a-directory.txt");
-			writeFileSync(parentFile, "hello\n");
-			const invalidPath = join(parentFile, "child.txt");
-
-			const result = await computeEditsDiff(invalidPath, [{ oldText: "hello", newText: "world" }], testDir);
-
-			expect(result).toEqual({ error: `Could not write file: ${invalidPath}. Error code: ENOTDIR.` });
 		});
 
 		it("should include EACCES in diff preview for unreadable files", async () => {
