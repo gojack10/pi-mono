@@ -249,9 +249,9 @@ export class AgentSession {
 	private _agentEventQueue: Promise<void> = Promise.resolve();
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
-	private _steeringMessages: string[] = [];
+	private _steeringMessages: AgentMessage[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
-	private _followUpMessages: string[] = [];
+	private _followUpMessages: AgentMessage[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -436,8 +436,8 @@ export class AgentSession {
 	private _emitQueueUpdate(): void {
 		this._emit({
 			type: "queue_update",
-			steering: [...this._steeringMessages],
-			followUp: [...this._followUpMessages],
+			steering: this.getSteeringMessages(),
+			followUp: this.getFollowUpMessages(),
 		});
 	}
 
@@ -500,13 +500,17 @@ export class AgentSession {
 			const messageText = this._getUserMessageText(event.message);
 			if (messageText) {
 				// Check steering queue first
-				const steeringIndex = this._steeringMessages.indexOf(messageText);
+				const steeringIndex = this._steeringMessages.findIndex(
+					(msg) => this._getUserMessageText(msg as Message) === messageText,
+				);
 				if (steeringIndex !== -1) {
 					this._steeringMessages.splice(steeringIndex, 1);
 					this._emitQueueUpdate();
 				} else {
 					// Check follow-up queue
-					const followUpIndex = this._followUpMessages.indexOf(messageText);
+					const followUpIndex = this._followUpMessages.findIndex(
+						(msg) => this._getUserMessageText(msg as Message) === messageText,
+					);
 					if (followUpIndex !== -1) {
 						this._followUpMessages.splice(followUpIndex, 1);
 						this._emitQueueUpdate();
@@ -1190,34 +1194,36 @@ export class AgentSession {
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
 	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
-		this._steeringMessages.push(text);
-		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.steer({
+		const message: AgentMessage = {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+		this._steeringMessages.push(message);
+		this._emitQueueUpdate();
+		this.agent.steer(message);
 	}
 
 	/**
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
 	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
-		this._followUpMessages.push(text);
-		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (images) {
 			content.push(...images);
 		}
-		this.agent.followUp({
+		const message: AgentMessage = {
 			role: "user",
 			content,
 			timestamp: Date.now(),
-		});
+		};
+		this._followUpMessages.push(message);
+		this._emitQueueUpdate();
+		this.agent.followUp(message);
 	}
 
 	/**
@@ -1327,7 +1333,7 @@ export class AgentSession {
 	 * Useful for restoring to editor when user aborts.
 	 * @returns Object with steering and followUp arrays
 	 */
-	clearQueue(): { steering: string[]; followUp: string[] } {
+	clearQueue(): { steering: AgentMessage[]; followUp: AgentMessage[] } {
 		const steering = [...this._steeringMessages];
 		const followUp = [...this._followUpMessages];
 		this._steeringMessages = [];
@@ -1344,12 +1350,12 @@ export class AgentSession {
 
 	/** Get pending steering messages (read-only) */
 	getSteeringMessages(): readonly string[] {
-		return this._steeringMessages;
+		return this._steeringMessages.map((msg) => this._getUserMessageText(msg as Message));
 	}
 
 	/** Get pending follow-up messages (read-only) */
 	getFollowUpMessages(): readonly string[] {
-		return this._followUpMessages;
+		return this._followUpMessages.map((msg) => this._getUserMessageText(msg as Message));
 	}
 
 	get resourceLoader(): ResourceLoader {

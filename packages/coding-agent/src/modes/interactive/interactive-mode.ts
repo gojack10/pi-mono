@@ -74,6 +74,7 @@ import { defaultModelPerProvider, findExactModelReferenceMatch, resolveModelScop
 import { DefaultPackageManager } from "../../core/package-manager.js";
 import type { ResourceDiagnostic } from "../../core/resource-loader.js";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.js";
+import { processImageAttachment, type ProcessedImageAttachment } from "../../utils/image-attachment.js";
 import { type SessionContext, SessionManager } from "../../core/session-manager.js";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.js";
 import type { SourceInfo } from "../../core/source-info.js";
@@ -155,8 +156,21 @@ class ExpandableText extends Text implements Expandable {
 	}
 }
 
-type CompactionQueuedMessage = {
+type PendingImageAttachment = {
+	id: string;
+	displayText: string;
+	path?: string;
+	image: ImageContent;
+	dimensionNote?: string;
+};
+
+type QueuedEditorMessage = {
 	text: string;
+	attachments?: PendingImageAttachment[];
+	images?: ImageContent[];
+};
+
+type CompactionQueuedMessage = QueuedEditorMessage & {
 	mode: "steer" | "followUp";
 };
 
@@ -314,6 +328,9 @@ export class InteractiveMode {
 	private retryLoader: Loader | undefined = undefined;
 	private retryCountdown: CountdownTimer | undefined = undefined;
 	private retryEscapeHandler?: () => void;
+
+	// Images pasted into the editor, awaiting submission with the next user message
+	private pendingImageAttachments: PendingImageAttachment[] = [];
 
 	// Messages queued while compaction is running
 	private compactionQueuedMessages: CompactionQueuedMessage[] = [];
@@ -770,7 +787,7 @@ export class InteractiveMode {
 		while (true) {
 			const userInput = await this.getUserInput();
 			try {
-				await this.session.prompt(userInput);
+				await this.promptSubmittedText(userInput);
 			} catch (error: unknown) {
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);
@@ -2457,19 +2474,84 @@ export class InteractiveMode {
 				return;
 			}
 
-			// Write to temp file
+			// Keep a temp copy for traceability, but attach the image bytes to the next prompt.
 			const tmpDir = os.tmpdir();
 			const ext = extensionForImageMimeType(image.mimeType) ?? "png";
 			const fileName = `pi-clipboard-${crypto.randomUUID()}.${ext}`;
 			const filePath = path.join(tmpDir, fileName);
 			fs.writeFileSync(filePath, Buffer.from(image.bytes));
 
-			// Insert file path directly
-			this.editor.insertTextAtCursor?.(filePath);
+			const processed = await processImageAttachment({
+				bytes: image.bytes,
+				mimeType: image.mimeType,
+				autoResizeImages: this.settingsManager.getImageAutoResize(),
+			});
+			if (!processed) {
+				this.showWarning("Pasted image omitted: could not be resized below the inline image size limit.");
+				return;
+			}
+
+			const attachmentId = String(this.pendingImageAttachments.length + 1);
+			const note = processed.dimensionNote ? ` ${processed.dimensionNote}` : "";
+			const attachment: PendingImageAttachment = {
+				id: attachmentId,
+				displayText: `[image #${attachmentId}: ${path.basename(filePath)}${note}]`,
+				path: filePath,
+				image: processed.image,
+				dimensionNote: processed.dimensionNote,
+			};
+			this.pendingImageAttachments.push(attachment);
+
+			this.insertEditorTextAtCursor(this.formatPendingImageAttachment(attachment));
+			if (this.session.model && !this.session.model.input.includes("image")) {
+				this.showWarning("Current model does not support image input; pasted image may be omitted.");
+			} else {
+				this.showStatus(`Attached image #${attachment.id}`);
+			}
 			this.ui.requestRender();
 		} catch {
 			// Silently ignore clipboard errors (may not have permission, etc.)
 		}
+	}
+
+	private formatPendingImageAttachment(attachment: PendingImageAttachment): string {
+		return attachment.displayText;
+	}
+
+	private insertEditorTextAtCursor(text: string): void {
+		const currentText = this.editor.getText();
+		const textToInsert = currentText && !/\s$/.test(currentText) ? ` ${text}` : text;
+		if (this.editor.insertTextAtCursor) {
+			this.editor.insertTextAtCursor(textToInsert);
+		} else {
+			this.editor.setText(`${currentText}${textToInsert}`);
+		}
+	}
+
+	private consumePendingImageAttachmentsForText(text: string): PendingImageAttachment[] | undefined {
+		if (this.pendingImageAttachments.length === 0) {
+			return undefined;
+		}
+
+		const attachments = this.pendingImageAttachments.filter((attachment) =>
+			text.includes(this.formatPendingImageAttachment(attachment)),
+		);
+		this.pendingImageAttachments = [];
+		return attachments.length > 0 ? attachments : undefined;
+	}
+
+	private consumePendingImagesForText(text: string): ImageContent[] | undefined {
+		const attachments = this.consumePendingImageAttachmentsForText(text);
+		const images = attachments?.map((attachment) => attachment.image);
+		return images && images.length > 0 ? images : undefined;
+	}
+
+	private async promptSubmittedText(
+		text: string,
+		options: { streamingBehavior?: "steer" | "followUp" } = {},
+	): Promise<void> {
+		const images = this.consumePendingImagesForText(text);
+		await this.session.prompt(text, { ...options, images });
 	}
 
 	private setupEditorSubmitHandler(): void {
@@ -2636,7 +2718,7 @@ export class InteractiveMode {
 			if (this.session.isStreaming) {
 				this.editor.addToHistory?.(text);
 				this.editor.setText("");
-				await this.session.prompt(text, { streamingBehavior: "steer" });
+				await this.promptSubmittedText(text, { streamingBehavior: "steer" });
 				this.updatePendingMessagesDisplay();
 				this.ui.requestRender();
 				return;
@@ -3355,7 +3437,7 @@ export class InteractiveMode {
 		if (this.session.isStreaming) {
 			this.editor.addToHistory?.(text);
 			this.editor.setText("");
-			await this.session.prompt(text, { streamingBehavior: "followUp" });
+			await this.promptSubmittedText(text, { streamingBehavior: "followUp" });
 			this.updatePendingMessagesDisplay();
 			this.ui.requestRender();
 		}
@@ -3580,19 +3662,40 @@ export class InteractiveMode {
 	 * Clear all queued messages and return their contents.
 	 * Clears both session queue and compaction queue.
 	 */
-	private clearAllQueues(): { steering: string[]; followUp: string[] } {
+	private clearAllQueues(): { steering: QueuedEditorMessage[]; followUp: QueuedEditorMessage[] } {
 		const { steering, followUp } = this.session.clearQueue();
-		const compactionSteering = this.compactionQueuedMessages
-			.filter((msg) => msg.mode === "steer")
-			.map((msg) => msg.text);
-		const compactionFollowUp = this.compactionQueuedMessages
-			.filter((msg) => msg.mode === "followUp")
-			.map((msg) => msg.text);
+		const compactionSteering = this.compactionQueuedMessages.filter((msg) => msg.mode === "steer");
+		const compactionFollowUp = this.compactionQueuedMessages.filter((msg) => msg.mode === "followUp");
 		this.compactionQueuedMessages = [];
 		return {
-			steering: [...steering, ...compactionSteering],
-			followUp: [...followUp, ...compactionFollowUp],
+			steering: [...steering.map((message) => this.queuedEditorMessageFromAgentMessage(message)), ...compactionSteering],
+			followUp: [...followUp.map((message) => this.queuedEditorMessageFromAgentMessage(message)), ...compactionFollowUp],
 		};
+	}
+
+	private getQueuedImages(message: QueuedEditorMessage): ImageContent[] | undefined {
+		return message.images ?? message.attachments?.map((attachment) => attachment.image);
+	}
+
+	private restoreQueuedImagesToPendingAttachments(messages: QueuedEditorMessage[]): void {
+		this.pendingImageAttachments = [];
+		for (const message of messages) {
+			if (message.attachments) {
+				this.pendingImageAttachments.push(...message.attachments);
+				continue;
+			}
+			if (!message.images || message.images.length === 0) {
+				continue;
+			}
+			for (const image of message.images) {
+				const attachmentId = String(this.pendingImageAttachments.length + 1);
+				this.pendingImageAttachments.push({
+					id: attachmentId,
+					displayText: `[image #${attachmentId}]`,
+					image,
+				});
+			}
+		}
 	}
 
 	private updatePendingMessagesDisplay(): void {
@@ -3614,6 +3717,16 @@ export class InteractiveMode {
 		}
 	}
 
+	private queuedEditorMessageFromAgentMessage(message: AgentMessage): QueuedEditorMessage {
+		return {
+			text: this.getUserMessageText(message as Message),
+			images:
+				message.role === "user" && Array.isArray(message.content)
+					? message.content.filter((content): content is ImageContent => content.type === "image")
+					: undefined,
+		};
+	}
+
 	private restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
 		const { steering, followUp } = this.clearAllQueues();
 		const allQueued = [...steering, ...followUp];
@@ -3624,7 +3737,8 @@ export class InteractiveMode {
 			}
 			return 0;
 		}
-		const queuedText = allQueued.join("\n\n");
+		this.restoreQueuedImagesToPendingAttachments(allQueued);
+		const queuedText = allQueued.map((msg) => msg.text).join("\n\n");
 		const currentText = options?.currentText ?? this.editor.getText();
 		const combinedText = [queuedText, currentText].filter((t) => t.trim()).join("\n\n");
 		this.editor.setText(combinedText);
@@ -3636,7 +3750,8 @@ export class InteractiveMode {
 	}
 
 	private queueCompactionMessage(text: string, mode: "steer" | "followUp"): void {
-		this.compactionQueuedMessages.push({ text, mode });
+		const attachments = this.consumePendingImageAttachmentsForText(text);
+		this.compactionQueuedMessages.push({ text, mode, attachments });
 		this.editor.addToHistory?.(text);
 		this.editor.setText("");
 		this.updatePendingMessagesDisplay();
@@ -3680,9 +3795,9 @@ export class InteractiveMode {
 					if (this.isExtensionCommand(message.text)) {
 						await this.session.prompt(message.text);
 					} else if (message.mode === "followUp") {
-						await this.session.followUp(message.text);
+						await this.session.followUp(message.text, this.getQueuedImages(message));
 					} else {
-						await this.session.steer(message.text);
+						await this.session.steer(message.text, this.getQueuedImages(message));
 					}
 				}
 				this.updatePendingMessagesDisplay();
@@ -3709,18 +3824,20 @@ export class InteractiveMode {
 			}
 
 			// Send first prompt (starts streaming)
-			const promptPromise = this.session.prompt(firstPrompt.text).catch((error) => {
-				restoreQueue(error);
-			});
+			const promptPromise = this.session
+				.prompt(firstPrompt.text, { images: this.getQueuedImages(firstPrompt) })
+				.catch((error) => {
+					restoreQueue(error);
+				});
 
 			// Queue remaining messages
 			for (const message of rest) {
 				if (this.isExtensionCommand(message.text)) {
 					await this.session.prompt(message.text);
 				} else if (message.mode === "followUp") {
-					await this.session.followUp(message.text);
+					await this.session.followUp(message.text, this.getQueuedImages(message));
 				} else {
-					await this.session.steer(message.text);
+					await this.session.steer(message.text, this.getQueuedImages(message));
 				}
 			}
 			this.updatePendingMessagesDisplay();
