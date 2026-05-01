@@ -7,7 +7,7 @@ import type { ImageContent } from "@mariozechner/pi-ai";
 import chalk from "chalk";
 import { resolve } from "path";
 import { resolveReadPath } from "../core/tools/path-utils.js";
-import { formatDimensionNote, resizeImage } from "../utils/image-resize.js";
+import { processImageAttachment } from "../utils/image-attachment.js";
 import { detectSupportedImageMimeTypeFromFile } from "../utils/mime.js";
 
 export interface ProcessedFiles {
@@ -50,36 +50,17 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 		if (mimeType) {
 			// Handle image file
 			const content = await readFile(absolutePath);
-			const base64Content = content.toString("base64");
-
-			let attachment: ImageContent;
-			let dimensionNote: string | undefined;
-
-			if (autoResizeImages) {
-				const resized = await resizeImage({ type: "image", data: base64Content, mimeType });
-				if (!resized) {
-					text += `<file name="${absolutePath}">[Image omitted: could not be resized below the inline image size limit.]</file>\n`;
-					continue;
-				}
-				dimensionNote = formatDimensionNote(resized);
-				attachment = {
-					type: "image",
-					mimeType: resized.mimeType,
-					data: resized.data,
-				};
-			} else {
-				attachment = {
-					type: "image",
-					mimeType,
-					data: base64Content,
-				};
+			const processed = await processImageAttachment({ bytes: content, mimeType, autoResizeImages });
+			if (!processed) {
+				text += `<file name="${absolutePath}">[Image omitted: could not be resized below the inline image size limit.]</file>\n`;
+				continue;
 			}
 
-			images.push(attachment);
+			images.push(processed.image);
 
 			// Add text reference to image with optional dimension note
-			if (dimensionNote) {
-				text += `<file name="${absolutePath}">${dimensionNote}</file>\n`;
+			if (processed.dimensionNote) {
+				text += `<file name="${absolutePath}">${processed.dimensionNote}</file>\n`;
 			} else {
 				text += `<file name="${absolutePath}"></file>\n`;
 			}
