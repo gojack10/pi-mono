@@ -62,6 +62,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private scopeText?: Text;
 	private scopeHintText?: Text;
 
+	private modelOrder?: Set<string>;
+
 	constructor(
 		tui: TUI,
 		currentModel: Model<any> | undefined,
@@ -71,6 +73,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		onSelect: (model: Model<any>) => void,
 		onCancel: () => void,
 		initialSearchInput?: string,
+		modelOrder?: Set<string>,
 	) {
 		super();
 
@@ -80,6 +83,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.modelRegistry = modelRegistry;
 		this.scopedModels = scopedModels;
 		this.scope = scopedModels.length > 0 ? "scoped" : "all";
+		this.modelOrder = modelOrder;
 		this.onSelectCallback = onSelect;
 		this.onCancelCallback = onCancel;
 
@@ -183,8 +187,25 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private sortModels(models: ModelItem[]): ModelItem[] {
 		const sorted = [...models];
-		// Sort: current model first, then by provider
+
+		// Build priority map: lower = more recent (higher priority)
+		const priority = new Map<string, number>();
+		if (this.modelOrder && this.modelOrder.size > 0) {
+			let rank = 0;
+			for (const key of this.modelOrder) {
+				if (!priority.has(key)) {
+					priority.set(key, rank++);
+				}
+			}
+		}
+
 		sorted.sort((a, b) => {
+			const keyA = `${a.provider}/${a.id}`;
+			const keyB = `${b.provider}/${b.id}`;
+			const pA = priority.get(keyA) ?? Number.MAX_SAFE_INTEGER;
+			const pB = priority.get(keyB) ?? Number.MAX_SAFE_INTEGER;
+			if (pA !== pB) return pA - pB;
+			// Within same recency tier: current model first, then alphabetical
 			const aIsCurrent = modelsAreEqual(this.currentModel, a.model);
 			const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
 			if (aIsCurrent && !bIsCurrent) return -1;

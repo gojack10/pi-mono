@@ -652,6 +652,7 @@ export interface ContextEvent {
 export interface BeforeProviderRequestEvent {
 	type: "before_provider_request";
 	payload: unknown;
+	provider: string;
 }
 
 /** Fired after a provider response is received and before the response stream is consumed. */
