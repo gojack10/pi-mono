@@ -386,9 +386,13 @@ export function findCutPoint(
 		return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
 	}
 
-	// Walk backwards from newest, accumulating estimated message sizes
+	// Walk backwards from newest, accumulating estimated message-like entry sizes.
+	// Session entries such as custom_message and branch_summary are not stored as
+	// type="message", but buildSessionContext() sends them to the LLM. Count them
+	// here too, otherwise auto-compaction can keep megabytes of extension-injected
+	// messages and make no progress.
 	let accumulatedTokens = 0;
-	let cutIndex = cutPoints[0]; // Default: keep from first message (not header)
+	let cutIndex = cutPoints[0]; // Default: keep from first message-like entry (not header)
 
 	for (let i = endIndex - 1; i >= startIndex; i--) {
 		const entry = entries[i];

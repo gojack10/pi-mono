@@ -662,6 +662,7 @@ export interface ContextEvent {
 export interface BeforeProviderRequestEvent {
 	type: "before_provider_request";
 	payload: unknown;
+	provider: string;
 }
 
 /**

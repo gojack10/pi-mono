@@ -148,7 +148,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 			if (!runner?.hasHandlers("before_provider_request")) {
 				return payload;
 			}
-			return runner.emitBeforeProviderRequest(payload);
+			return runner.emitBeforeProviderRequest(payload, "test");
 		},
 		onResponse: async (response) => {
 			const runner = extensionRunnerRef.current;

@@ -171,13 +171,34 @@ function parseTimeoutSetting(value: unknown, settingName: string): number | unde
 }
 
 export type SettingsScope = "global" | "project";
+export type SettingsLayer = "merged" | "legacy" | "shared" | "local";
+
+type WritableSettingsLayer = Exclude<SettingsLayer, "merged">;
+
+const LEGACY_SETTINGS_FILENAME = "settings.json";
+const SHARED_SETTINGS_FILENAME = "settings.shared.json";
+const LOCAL_SETTINGS_FILENAME = "settings.local.json";
+
+const LOCAL_SETTINGS_FIELDS = new Set<keyof Settings>([
+	"lastChangelogVersion",
+	"defaultProvider",
+	"defaultModel",
+	"defaultThinkingLevel",
+	"enabledModels",
+]);
+
+interface ScopedSettingsPaths {
+	legacy: string;
+	shared: string;
+	local: string;
+}
 
 export interface SettingsManagerCreateOptions {
 	projectTrusted?: boolean;
 }
 
 export interface SettingsStorage {
-	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
+	withLock(scope: SettingsScope, layer: SettingsLayer, fn: (current: string | undefined) => string | undefined): void;
 }
 
 export interface SettingsError {
@@ -185,15 +206,57 @@ export interface SettingsError {
 	error: Error;
 }
 
+function settingsLayerForField(field: keyof Settings): WritableSettingsLayer {
+	return LOCAL_SETTINGS_FIELDS.has(field) ? "local" : "shared";
+}
+
 export class FileSettingsStorage implements SettingsStorage {
-	private globalSettingsPath: string;
-	private projectSettingsPath: string;
+	private globalSettingsPaths: ScopedSettingsPaths;
+	private projectSettingsPaths: ScopedSettingsPaths;
 
 	constructor(cwd: string, agentDir: string) {
 		const resolvedCwd = resolvePath(cwd);
 		const resolvedAgentDir = resolvePath(agentDir);
-		this.globalSettingsPath = join(resolvedAgentDir, "settings.json");
-		this.projectSettingsPath = join(resolvedCwd, CONFIG_DIR_NAME, "settings.json");
+		this.globalSettingsPaths = this.createSettingsPaths(resolvedAgentDir);
+		this.projectSettingsPaths = this.createSettingsPaths(join(resolvedCwd, CONFIG_DIR_NAME));
+	}
+
+	private createSettingsPaths(dir: string): ScopedSettingsPaths {
+		return {
+			legacy: join(dir, LEGACY_SETTINGS_FILENAME),
+			shared: join(dir, SHARED_SETTINGS_FILENAME),
+			local: join(dir, LOCAL_SETTINGS_FILENAME),
+		};
+	}
+
+	private pathsForScope(scope: SettingsScope): ScopedSettingsPaths {
+		return scope === "global" ? this.globalSettingsPaths : this.projectSettingsPaths;
+	}
+
+	private splitSettingsActive(scope: SettingsScope): boolean {
+		const paths = this.pathsForScope(scope);
+		return existsSync(paths.shared) || existsSync(paths.local);
+	}
+
+	private pathForLayer(scope: SettingsScope, layer: WritableSettingsLayer): string {
+		const paths = this.pathsForScope(scope);
+		if (layer !== "legacy" && !this.splitSettingsActive(scope)) {
+			return paths.legacy;
+		}
+		return paths[layer];
+	}
+
+	private readMergedSettings(scope: SettingsScope): string | undefined {
+		const paths = this.pathsForScope(scope);
+		let merged: Settings = {};
+		let found = false;
+		for (const path of [paths.shared, paths.legacy, paths.local]) {
+			if (!existsSync(path)) continue;
+			const parsed = JSON.parse(readFileSync(path, "utf-8")) as Settings;
+			merged = deepMergeSettings(merged, parsed);
+			found = true;
+		}
+		return found ? JSON.stringify(merged, null, 2) : undefined;
 	}
 
 	private acquireLockSyncWithRetry(path: string): () => void {
@@ -223,8 +286,16 @@ export class FileSettingsStorage implements SettingsStorage {
 		throw (lastError as Error) ?? new Error("Failed to acquire settings lock");
 	}
 
-	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
-		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
+	withLock(scope: SettingsScope, layer: SettingsLayer, fn: (current: string | undefined) => string | undefined): void {
+		if (layer === "merged") {
+			const next = fn(this.readMergedSettings(scope));
+			if (next !== undefined) {
+				throw new Error("Merged settings are read-only; write a concrete settings layer");
+			}
+			return;
+		}
+
+		const path = this.pathForLayer(scope, layer);
 		const dir = dirname(path);
 
 		let release: (() => void) | undefined;
@@ -255,18 +326,37 @@ export class FileSettingsStorage implements SettingsStorage {
 }
 
 export class InMemorySettingsStorage implements SettingsStorage {
-	private global: string | undefined;
-	private project: string | undefined;
+	private data = new Map<string, string | undefined>();
 
-	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
-		const current = scope === "global" ? this.global : this.project;
-		const next = fn(current);
-		if (next !== undefined) {
-			if (scope === "global") {
-				this.global = next;
-			} else {
-				this.project = next;
+	private key(scope: SettingsScope, layer: WritableSettingsLayer): string {
+		return `${scope}:${layer}`;
+	}
+
+	private readMergedSettings(scope: SettingsScope): string | undefined {
+		let merged: Settings = {};
+		let found = false;
+		for (const layer of ["shared", "legacy", "local"] as const) {
+			const current = this.data.get(this.key(scope, layer));
+			if (!current) continue;
+			merged = deepMergeSettings(merged, JSON.parse(current) as Settings);
+			found = true;
+		}
+		return found ? JSON.stringify(merged, null, 2) : undefined;
+	}
+
+	withLock(scope: SettingsScope, layer: SettingsLayer, fn: (current: string | undefined) => string | undefined): void {
+		if (layer === "merged") {
+			const next = fn(this.readMergedSettings(scope));
+			if (next !== undefined) {
+				throw new Error("Merged settings are read-only; write a concrete settings layer");
 			}
+			return;
+		}
+
+		const key = this.key(scope, layer);
+		const next = fn(this.data.get(key));
+		if (next !== undefined) {
+			this.data.set(key, next);
 		}
 	}
 }
@@ -343,7 +433,7 @@ export class SettingsManager {
 	static inMemory(settings: Partial<Settings> = {}, options: SettingsManagerCreateOptions = {}): SettingsManager {
 		const storage = new InMemorySettingsStorage();
 		const initialSettings = SettingsManager.migrateSettings(structuredClone(settings) as Record<string, unknown>);
-		storage.withLock("global", () => JSON.stringify(initialSettings, null, 2));
+		storage.withLock("global", "legacy", () => JSON.stringify(initialSettings, null, 2));
 		return SettingsManager.fromStorage(storage, options);
 	}
 
@@ -353,7 +443,7 @@ export class SettingsManager {
 		}
 
 		let content: string | undefined;
-		storage.withLock(scope, (current) => {
+		storage.withLock(scope, "merged", (current) => {
 			content = current;
 			return undefined;
 		});
@@ -575,13 +665,27 @@ export class SettingsManager {
 		return snapshot;
 	}
 
+	private splitModifiedFields(modifiedFields: Set<keyof Settings>): Map<WritableSettingsLayer, Set<keyof Settings>> {
+		const fieldsByLayer = new Map<WritableSettingsLayer, Set<keyof Settings>>([
+			["shared", new Set()],
+			["local", new Set()],
+		]);
+		for (const field of modifiedFields) {
+			fieldsByLayer.get(settingsLayerForField(field))!.add(field);
+		}
+		return fieldsByLayer;
+	}
+
 	private persistScopedSettings(
 		scope: SettingsScope,
+		layer: WritableSettingsLayer,
 		snapshotSettings: Settings,
 		modifiedFields: Set<keyof Settings>,
 		modifiedNestedFields: Map<keyof Settings, Set<string>>,
 	): void {
-		this.storage.withLock(scope, (current) => {
+		if (modifiedFields.size === 0) return;
+
+		this.storage.withLock(scope, layer, (current) => {
 			const currentFileSettings = current
 				? SettingsManager.migrateSettings(JSON.parse(current) as Record<string, unknown>)
 				: {};
@@ -614,11 +718,13 @@ export class SettingsManager {
 		}
 
 		const snapshotGlobalSettings = structuredClone(this.globalSettings);
-		const modifiedFields = new Set(this.modifiedFields);
+		const fieldsByLayer = this.splitModifiedFields(new Set(this.modifiedFields));
 		const modifiedNestedFields = this.cloneModifiedNestedFields(this.modifiedNestedFields);
 
 		this.enqueueWrite("global", () => {
-			this.persistScopedSettings("global", snapshotGlobalSettings, modifiedFields, modifiedNestedFields);
+			for (const [layer, modifiedFields] of fieldsByLayer.entries()) {
+				this.persistScopedSettings("global", layer, snapshotGlobalSettings, modifiedFields, modifiedNestedFields);
+			}
 		});
 	}
 
@@ -632,10 +738,12 @@ export class SettingsManager {
 		}
 
 		const snapshotProjectSettings = structuredClone(this.projectSettings);
-		const modifiedFields = new Set(this.modifiedProjectFields);
+		const fieldsByLayer = this.splitModifiedFields(new Set(this.modifiedProjectFields));
 		const modifiedNestedFields = this.cloneModifiedNestedFields(this.modifiedProjectNestedFields);
 		this.enqueueWrite("project", () => {
-			this.persistScopedSettings("project", snapshotProjectSettings, modifiedFields, modifiedNestedFields);
+			for (const [layer, modifiedFields] of fieldsByLayer.entries()) {
+				this.persistScopedSettings("project", layer, snapshotProjectSettings, modifiedFields, modifiedNestedFields);
+			}
 		});
 	}
 

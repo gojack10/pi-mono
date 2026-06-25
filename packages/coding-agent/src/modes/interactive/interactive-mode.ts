@@ -496,6 +496,15 @@ export class InteractiveMode {
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(this.session, this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+		this.ui.setOverlayProtectedBottomRowsProvider((width) => {
+			const bottomComponents: Component[] = [
+				this.widgetContainerAbove,
+				this.editorContainer,
+				this.widgetContainerBelow,
+				this.customFooter ?? this.footer,
+			];
+			return bottomComponents.reduce((rows, component) => rows + component.render(width).length, 0);
+		});
 
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -2877,6 +2886,12 @@ export class InteractiveMode {
 				this.ui.requestRender();
 				break;
 
+			case "model_changed":
+				this.footer.invalidate();
+				this.updateEditorBorderColor();
+				this.ui.requestRender();
+				break;
+
 			case "thinking_level_changed":
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
@@ -4427,6 +4442,42 @@ export class InteractiveMode {
 	}
 
 	private showModelSelector(initialSearchInput?: string): void {
+		// Read model-recency order from session entries for MRU sorting
+		let modelOrder: Set<string> | undefined;
+		try {
+			const entries = (this.session as any).sessionManager?.getEntries() ?? [];
+			for (let i = entries.length - 1; i >= 0; i--) {
+				const entry = entries[i];
+				if ((entry as any).type === "custom" && (entry as any).customType === "model-recency") {
+					const data = (entry as any).data;
+					if (data?.order && Array.isArray(data.order)) {
+						const order: Array<{ provider: string; modelId: string }> = data.order;
+						modelOrder = new Set(order.map((r) => `${r.provider}/${r.modelId}`));
+					}
+					break;
+				}
+			}
+			// Fallback: read from cache file (survives session restarts)
+			if (!modelOrder) {
+				try {
+					const fs = require("fs");
+					const cachePath = require("path").join(
+						process.env.HOME ?? require("os").homedir(),
+						".pi/agent/model-recency.json",
+					);
+					const raw = fs.readFileSync(cachePath, "utf-8");
+					const data = JSON.parse(raw);
+					if (data?.order && Array.isArray(data.order)) {
+						modelOrder = new Set(data.order.map((r: any) => `${r.provider}/${r.modelId}`));
+					}
+				} catch {
+					/* ignore */
+				}
+			}
+		} catch {
+			/* ignore any errors reading entries */
+		}
+
 		this.showSelector((done) => {
 			const selector = new ModelSelectorComponent(
 				this.ui,
@@ -4453,6 +4504,7 @@ export class InteractiveMode {
 					this.ui.requestRender();
 				},
 				initialSearchInput,
+				modelOrder,
 			);
 			return { component: selector, focus: selector };
 		});

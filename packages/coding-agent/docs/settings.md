@@ -7,6 +7,19 @@ Pi uses JSON settings files with project settings overriding global settings.
 | `~/.pi/agent/settings.json` | Global (all projects) |
 | `.pi/settings.json` | Project (current directory) |
 
+Each scope can also be split into tracked shared settings and ignored local overrides:
+
+| Location | Scope |
+|----------|-------|
+| `~/.pi/agent/settings.shared.json` | Global shared settings |
+| `~/.pi/agent/settings.local.json` | Global local overrides |
+| `.pi/settings.shared.json` | Project shared settings |
+| `.pi/settings.local.json` | Project local overrides |
+
+Within a scope, pi merges `settings.shared.json`, then legacy `settings.json`, then `settings.local.json`; later files override earlier files, and nested objects are merged. Project settings still override global settings after each scope is merged.
+
+When split settings are active for a scope, pi writes volatile model-selection fields (`lastChangelogVersion`, `defaultProvider`, `defaultModel`, `defaultThinkingLevel`, and `enabledModels`) to `settings.local.json`. Other settings are written to `settings.shared.json`. If neither split file exists, pi keeps the legacy behavior and writes to `settings.json`.
+
 Edit directly or use `/settings` for common options.
 
 ## Project Trust
@@ -231,7 +244,7 @@ When multiple sources specify a session directory, precedence is `--session-dir`
 
 These settings define where to load extensions, skills, prompts, and themes from.
 
-Paths in `~/.pi/agent/settings.json` resolve relative to `~/.pi/agent`. Paths in `.pi/settings.json` resolve relative to `.pi`. Absolute paths and `~` are supported.
+Paths in `~/.pi/agent/settings*.json` resolve relative to `~/.pi/agent`. Paths in `.pi/settings*.json` resolve relative to `.pi`. Absolute paths and `~` are supported.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
