@@ -395,6 +395,18 @@ export async function processResponsesStream<TApi extends Api>(
 		if (response?.id) {
 			output.responseId = response.id;
 		}
+		const cacheResponse = response as typeof response & {
+			prompt_cache_retention?: unknown;
+			prompt_cache_options?: { ttl?: unknown } | null;
+		};
+		const retention = cacheResponse.prompt_cache_retention;
+		const ttl = cacheResponse.prompt_cache_options?.ttl;
+		if (typeof retention === "string" || typeof ttl === "string") {
+			output.promptCache = {
+				...(typeof retention === "string" ? { retention } : {}),
+				...(typeof ttl === "string" ? { ttl } : {}),
+			};
+		}
 		if (response?.usage) {
 			const inputDetails = response.usage.input_tokens_details as
 				| { cached_tokens?: number; cache_write_tokens?: number }

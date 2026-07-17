@@ -114,6 +114,8 @@ async function* createCompletedEvents(): AsyncIterable<ResponseStreamEvent> {
 		response: {
 			id: "resp_completed",
 			status: "completed",
+			prompt_cache_retention: "24h",
+			prompt_cache_options: { ttl: "30m" },
 			usage: {
 				input_tokens: 20,
 				output_tokens: 7,
@@ -193,6 +195,7 @@ describe("OpenAI Responses terminal event handling", () => {
 		await processResponsesStream(createCompletedEvents(), output, stream, model);
 
 		expect(output.responseId).toBe("resp_completed");
+		expect(output.promptCache).toEqual({ retention: "24h", ttl: "30m" });
 		expect(output.stopReason).toBe("stop");
 		expect(output.usage).toMatchObject({
 			input: 15,
