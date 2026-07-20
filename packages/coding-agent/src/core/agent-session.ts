@@ -151,6 +151,7 @@ export type AgentSessionEvent =
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
 	| { type: "entry_appended"; entry: SessionEntry }
 	| { type: "session_info_changed"; name: string | undefined }
+	| { type: "model_changed"; model: Model<any>; previousModel: Model<any> | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| {
 			type: "compaction_end";
@@ -1545,6 +1546,7 @@ export class AgentSession {
 		source: "set" | "cycle" | "restore",
 	): Promise<void> {
 		if (modelsAreEqual(previousModel, nextModel)) return;
+		this._emit({ type: "model_changed", model: nextModel, previousModel });
 		await this._extensionRunner.emit({
 			type: "model_select",
 			model: nextModel,
