@@ -4415,6 +4415,23 @@ export class InteractiveMode {
 	}
 
 	private showModelSelector(initialSearchInput?: string): void {
+		const modelOrder = new Set<string>();
+		try {
+			const raw = fs.readFileSync(path.join(os.homedir(), ".pi/agent/model-recency.json"), "utf-8");
+			const parsed: unknown = JSON.parse(raw);
+			if (typeof parsed === "object" && parsed !== null && "order" in parsed && Array.isArray(parsed.order)) {
+				for (const entry of parsed.order) {
+					if (typeof entry !== "object" || entry === null) continue;
+					const candidate = entry as { provider?: unknown; modelId?: unknown };
+					if (typeof candidate.provider === "string" && typeof candidate.modelId === "string") {
+						modelOrder.add(`${candidate.provider}/${candidate.modelId}`);
+					}
+				}
+			}
+		} catch {
+			// Model recency is optional.
+		}
+
 		this.showSelector((done) => {
 			const selector = new ModelSelectorComponent(
 				this.ui,
@@ -4441,6 +4458,7 @@ export class InteractiveMode {
 					this.ui.requestRender();
 				},
 				initialSearchInput,
+				modelOrder,
 			);
 			return { component: selector, focus: selector };
 		});
