@@ -95,7 +95,11 @@ function getAliases(): Record<string, string> {
 		if (fs.existsSync(workspacePath)) {
 			return workspacePath;
 		}
-		return fileURLToPath(import.meta.resolve(specifier));
+		try {
+			return require.resolve(specifier);
+		} catch {
+			return fileURLToPath(import.meta.resolve(specifier));
+		}
 	};
 
 	const piCodingAgentEntry = packageIndex;
