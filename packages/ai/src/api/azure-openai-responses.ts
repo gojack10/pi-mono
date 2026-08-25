@@ -277,7 +277,7 @@ function buildParams(
 		model.compat?.supportsOpenAIGrammarTools ?? false,
 	),
 ) {
-	const messages = convertResponsesMessages(model, context, AZURE_TOOL_CALL_PROVIDERS, {
+	const messages = convertResponsesMessages(model, context, (provider) => AZURE_TOOL_CALL_PROVIDERS.has(provider), {
 		grammarToolInputProperties,
 	});
 

@@ -66,6 +66,8 @@ const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
 // endpoint (the same endpoint the official Codex client compresses against).
 const REQUEST_COMPRESSION_ZSTD_LEVEL = 3;
 const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
+const isCodexToolCallProvider = (provider: string): boolean =>
+	CODEX_TOOL_CALL_PROVIDERS.has(provider) || provider.startsWith("openai-codex-");
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const PREVIOUS_RESPONSE_NOT_FOUND_CODE = "previous_response_not_found";
@@ -540,7 +542,7 @@ function buildRequestBody(
 	const supportsStrictMode = model.compat?.supportsStrictMode ?? true;
 	const supportsOpenAIGrammarTools = model.compat?.supportsOpenAIGrammarTools ?? false;
 	const toolPlacement = splitDeferredTools(context, model.compat?.supportsToolSearch ?? false);
-	const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
+	const messages = convertResponsesMessages(model, context, isCodexToolCallProvider, {
 		includeSystemPrompt: false,
 		grammarToolInputProperties,
 		deferredTools: toolPlacement.deferred,
@@ -1520,7 +1522,7 @@ async function processWebSocketStream(
 		if (options?.signal?.aborted) {
 			keepConnection = false;
 		} else if (useCachedContext && entry && output.responseId) {
-			const responseItems = convertResponsesMessages(model, { messages: [output] }, CODEX_TOOL_CALL_PROVIDERS, {
+			const responseItems = convertResponsesMessages(model, { messages: [output] }, isCodexToolCallProvider, {
 				includeSystemPrompt: false,
 				grammarToolInputProperties,
 			}).filter((item) => item.type !== "function_call_output" && item.type !== "custom_tool_call_output");

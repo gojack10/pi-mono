@@ -265,7 +265,7 @@ function buildParams(
 	),
 ) {
 	const toolPlacement = splitDeferredTools(context, compat.supportsToolSearch);
-	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
+	const messages = convertResponsesMessages(model, context, (provider) => OPENAI_TOOL_CALL_PROVIDERS.has(provider), {
 		grammarToolInputProperties,
 		deferredTools: toolPlacement.deferred,
 		toolOptions: {
