@@ -3082,6 +3082,12 @@ export class InteractiveMode {
 				this.ui.requestRender();
 				break;
 
+			case "model_changed":
+				this.footer.invalidate();
+				this.updateEditorBorderColor();
+				this.ui.requestRender();
+				break;
+
 			case "thinking_level_changed":
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
