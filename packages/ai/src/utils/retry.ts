@@ -27,6 +27,8 @@ const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 	"subscription_sharing_usage_limit_exceeded",
 ]);
 
+export const EMPTY_ASSISTANT_COMPLETION_ERROR = "Provider returned an empty completion";
+
 const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	// Generic provider load, HTTP status, and server-side transient failures.
 	"overloaded",
@@ -234,6 +236,16 @@ export async function retryAssistantCall(
 	}
 }
 
+/** A terminal success with no user-visible output and no reported output tokens. */
+export function isEmptyAssistantCompletion(message: AssistantMessage): boolean {
+	return (
+		message.stopReason === "stop" &&
+		!message.errorMessage &&
+		(message.usage?.output ?? 0) === 0 &&
+		!message.content.some((block) => block.type === "text" || block.type === "toolCall")
+	);
+}
+
 /**
  * Classifies whether a failed assistant message looks like a transient provider
  * or transport error, so callers can decide if the last assistant turn should be
@@ -246,6 +258,7 @@ export async function retryAssistantCall(
 export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const errorMessage = message.errorMessage;
+	if (errorMessage === EMPTY_ASSISTANT_COMPLETION_ERROR) return true;
 	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
 }

@@ -46,8 +46,10 @@ import type {
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
+	EMPTY_ASSISTANT_COMPLETION_ERROR,
 	getSupportedThinkingLevels,
 	isContextOverflow,
+	isEmptyAssistantCompletion,
 	isRecoverableLength,
 	isRetryableAssistantError,
 	modelsAreEqual,
@@ -1090,6 +1092,18 @@ export class AgentSession {
 				this._nestedToolCalls.clear();
 			}
 		}
+		if (
+			event.type === "message_end" &&
+			event.message.role === "assistant" &&
+			isEmptyAssistantCompletion(event.message)
+		) {
+			this._replaceMessageInPlace(event.message, {
+				...event.message,
+				stopReason: "error",
+				errorMessage: EMPTY_ASSISTANT_COMPLETION_ERROR,
+			});
+		}
+
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {

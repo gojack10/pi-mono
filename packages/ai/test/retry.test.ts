@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage } from "../src/providers/faux.ts";
-import { isRetryableAssistantError, type RetryPolicy, retryAssistantCall, retryDelayMs } from "../src/utils/retry.ts";
+import {
+	EMPTY_ASSISTANT_COMPLETION_ERROR,
+	isEmptyAssistantCompletion,
+	isRetryableAssistantError,
+	type RetryPolicy,
+	retryAssistantCall,
+	retryDelayMs,
+} from "../src/utils/retry.ts";
 
 const openAIExplicitRetryMessage =
 	"An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID req_******** in your message.";
@@ -14,6 +21,40 @@ const wrappedDnsLookupError =
 	"The pending stream has been canceled (caused by: getaddrinfo ENOTFOUND bedrock-runtime.us-east-1.amazonaws.com)";
 const azurePeakLoadError =
 	"The system is currently experiencing high demand and cannot process your request. Your request exceeds the maximum usage size allowed during peak load. For improved capacity reliability, consider switching to Provisioned Throughput.";
+
+describe("empty completion classification", () => {
+	it("flags terminal zero-token completions without text or tool calls", () => {
+		const empty = fauxAssistantMessage([]);
+		expect(isEmptyAssistantCompletion({ ...empty, usage: { ...empty.usage, output: 0 } })).toBe(true);
+		expect(isEmptyAssistantCompletion({ ...empty, usage: undefined } as never)).toBe(true);
+
+		const thinkingOnly = fauxAssistantMessage({ type: "thinking", thinking: "internal" });
+		expect(isEmptyAssistantCompletion({ ...thinkingOnly, usage: { ...thinkingOnly.usage, output: 0 } })).toBe(true);
+	});
+
+	it("keeps visible, tool, token-producing, and unsuccessful completions", () => {
+		const visible = fauxAssistantMessage("visible");
+		const tool = fauxAssistantMessage({ type: "toolCall", id: "call", name: "read", arguments: {} });
+		const tokenProducing = fauxAssistantMessage([]);
+		const unsuccessful = fauxAssistantMessage([], { stopReason: "length" });
+		const errored = fauxAssistantMessage([], { errorMessage: "provider error" });
+		expect([
+			isEmptyAssistantCompletion({ ...visible, usage: { ...visible.usage, output: 0 } }),
+			isEmptyAssistantCompletion({ ...tool, usage: { ...tool.usage, output: 0 } }),
+			isEmptyAssistantCompletion({ ...tokenProducing, usage: { ...tokenProducing.usage, output: 1 } }),
+			isEmptyAssistantCompletion({ ...unsuccessful, usage: { ...unsuccessful.usage, output: 0 } }),
+			isEmptyAssistantCompletion({ ...errored, usage: { ...errored.usage, output: 0 } }),
+		]).toEqual([false, false, false, false, false]);
+	});
+
+	it("treats the surfaced empty-completion error as retryable", () => {
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage([], { stopReason: "error", errorMessage: EMPTY_ASSISTANT_COMPLETION_ERROR }),
+			),
+		).toBe(true);
+	});
+});
 
 describe("provider retry classification", () => {
 	it("matches explicit provider retry guidance", () => {
