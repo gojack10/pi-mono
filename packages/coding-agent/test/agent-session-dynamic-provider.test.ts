@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Provider } from "@earendil-works/pi-ai";
+import type { Model, Provider } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
@@ -50,8 +50,14 @@ describe("AgentSession dynamic provider registration", () => {
 		}
 	});
 
-	async function createSession(extensionFactories: ExtensionFactory[]) {
+	async function createSession(
+		extensionFactories: ExtensionFactory[],
+		model: Model<any> | null = getModel("anthropic", "claude-sonnet-4-5")!,
+		configuredDefault?: { provider: string; modelId: string },
+	) {
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		if (configuredDefault)
+			settingsManager.setDefaultModelAndProvider(configuredDefault.provider, configuredDefault.modelId);
 		const sessionManager = SessionManager.inMemory();
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
@@ -70,7 +76,7 @@ describe("AgentSession dynamic provider registration", () => {
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir,
-			model: getModel("anthropic", "claude-sonnet-4-5")!,
+			...(model ? { model } : {}),
 			settingsManager,
 			sessionManager,
 			modelRuntime,
@@ -91,6 +97,37 @@ describe("AgentSession dynamic provider registration", () => {
 		await session.prompt("hello");
 		return baseUrl;
 	}
+
+	it("replaces a built-in fallback with a configured extension provider default", async () => {
+		const base = getModel("anthropic", "claude-sonnet-4-5")!;
+		const selected = { ...base, provider: "selector" };
+		const resolved = { ...base, provider: "resolved" };
+		const session = await createSession(
+			[
+				(pi) => {
+					const source = nativeAnthropicProvider("http://localhost:8080/resolved");
+					pi.registerProvider({
+						...source,
+						id: "resolved",
+						getModels: () => [resolved],
+					});
+					pi.registerProvider({
+						...source,
+						id: "selector",
+						getModels: () => [selected],
+						resolveModel: (_model, context) => context.getModel("resolved", resolved.id)!,
+					});
+				},
+			],
+			null,
+			{ provider: "selector", modelId: selected.id },
+		);
+
+		expect(session.model?.provider).toBe("anthropic");
+		await session.bindExtensions({});
+		expect(session.model?.provider).toBe("resolved");
+		session.dispose();
+	});
 
 	it("applies top-level registerProvider overrides to the active model", async () => {
 		const session = await createSession([

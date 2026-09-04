@@ -203,6 +203,7 @@ export type AgentSessionEvent =
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
 	| { type: "entry_appended"; entry: SessionEntry }
 	| { type: "session_info_changed"; name: string | undefined }
+	| { type: "model_changed"; model: Model<any>; previousModel: Model<any> | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| {
 			type: "compaction_end";
@@ -280,6 +281,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Configured default unavailable until extensions register its provider. */
+	deferredInitialModel?: { provider: string; modelId: string };
 }
 
 export interface ExtensionBindings {
@@ -444,6 +447,7 @@ export class AgentSession {
 
 	private _modelRuntime: ModelRuntime;
 	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
+	private _deferredInitialModel?: { provider: string; modelId: string };
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -472,6 +476,7 @@ export class AgentSession {
 		if (this._cacheWarmer) {
 			this._cacheWarmer.onWarmed = (entry) => this._emit({ type: "entry_appended", entry });
 		}
+		this._deferredInitialModel = config.deferredInitialModel;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._usesDefaultTools = config.usesDefaultTools ?? false;
@@ -2413,12 +2418,35 @@ export class AgentSession {
 		source: "set" | "cycle" | "restore",
 	): Promise<void> {
 		if (modelsAreEqual(previousModel, nextModel)) return;
+		this._emit({ type: "model_changed", model: nextModel, previousModel });
 		await this._extensionRunner.emit({
 			type: "model_select",
 			model: nextModel,
 			previousModel,
 			source,
 		});
+	}
+
+	private async _resolveSelectedModel(model: Model<any>, previousModel?: Model<any>): Promise<Model<any>> {
+		const selectionError = this._modelRuntime.getProvider(model.provider)?.modelSelectionError?.(model);
+		if (selectionError) throw new Error(selectionError);
+		const resolved = await this._modelRuntime.resolveProviderModel(model, previousModel);
+		if (!(await this._modelRuntime.checkAuth(resolved.provider))) {
+			throw new Error(`No API key for ${resolved.provider}/${resolved.id}`);
+		}
+		return resolved;
+	}
+
+	private async _resolveActiveProviderModel(): Promise<void> {
+		const deferred = this._deferredInitialModel;
+		this._deferredInitialModel = undefined;
+		const selected = deferred ? this._modelRuntime.getModel(deferred.provider, deferred.modelId) : this.model;
+		if (!selected || (!deferred && !this._modelRuntime.getProvider(selected.provider)?.resolveModel)) return;
+		const resolved = await this._resolveSelectedModel(selected, this.model);
+		if (modelsAreEqual(this.model, resolved)) return;
+		this.agent.state.model = resolved;
+		this.sessionManager.appendModelChange(resolved.provider, resolved.id);
+		await this._emitModelSelect(resolved, selected, "restore");
 	}
 
 	/**
@@ -2428,17 +2456,16 @@ export class AgentSession {
 	 * @throws Error if no auth is configured for the model
 	 */
 	async setModel(model: Model<any>, options: ModelMutationOptions = {}): Promise<void> {
-		if (!(await this._modelRuntime.checkAuth(model.provider))) {
-			throw new Error(`No API key for ${model.provider}/${model.id}`);
-		}
-
+		const selectedModel = model;
 		const previousModel = this.model;
+		model = await this._resolveSelectedModel(model, previousModel);
+
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
 		this.agent.state.model = model;
 		this.sessionManager.appendModelChange(model.provider, model.id);
 		if (options.persist) {
-			this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
-			this._addPersistedDefaultToNonEmptyScope(model);
+			this.settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id);
+			this._addPersistedDefaultToNonEmptyScope(selectedModel);
 		}
 
 		// Apply thinking level for the new model.
@@ -2498,11 +2525,12 @@ export class AgentSession {
 		const len = scopedModels.length;
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const next = scopedModels[nextIndex];
-		const thinkingLevel = this._getThinkingLevelForModelSwitch(next.model, next.thinkingLevel);
+		const nextModel = await this._resolveSelectedModel(next.model, currentModel);
+		const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel, next.thinkingLevel);
 
 		// Apply model
-		this.agent.state.model = next.model;
-		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
+		this.agent.state.model = nextModel;
+		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		if (options.persist) {
 			this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
 			this._addPersistedDefaultToNonEmptyScope(next.model);
@@ -2515,9 +2543,9 @@ export class AgentSession {
 		// Model persistence does not implicitly rewrite the global thinking default.
 		this.setThinkingLevel(thinkingLevel);
 
-		await this._emitModelSelect(next.model, currentModel, "cycle");
+		await this._emitModelSelect(nextModel, currentModel, "cycle");
 
-		return { model: next.model, thinkingLevel: this.thinkingLevel, isScoped: true };
+		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: true };
 	}
 
 	private async _cycleAvailableModel(
@@ -2533,14 +2561,15 @@ export class AgentSession {
 		if (currentIndex === -1) currentIndex = 0;
 		const len = availableModels.length;
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
-		const nextModel = availableModels[nextIndex];
+		const selectedModel = availableModels[nextIndex];
+		const nextModel = await this._resolveSelectedModel(selectedModel, currentModel);
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel);
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
 		if (options.persist) {
-			this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
-			this._addPersistedDefaultToNonEmptyScope(nextModel);
+			this.settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id);
+			this._addPersistedDefaultToNonEmptyScope(selectedModel);
 		}
 
 		// Apply thinking level for the new model.
@@ -3230,6 +3259,7 @@ export class AgentSession {
 
 		this._applyExtensionBindings(this._extensionRunner);
 		await this._extensionRunner.emit(this._sessionStartEvent);
+		await this._resolveActiveProviderModel();
 		this._extensionRunner.reportUnhandledMcpServers();
 		await this.extendResourcesFromExtensions(this._sessionStartEvent.reason === "reload" ? "reload" : "startup");
 	}
@@ -3644,6 +3674,7 @@ export class AgentSession {
 		if (hasBindings) {
 			await options?.beforeSessionStart?.();
 			await this._extensionRunner.emit({ type: "session_start", reason: "reload" });
+			await this._resolveActiveProviderModel();
 			this._extensionRunner.reportUnhandledMcpServers();
 			await this.extendResourcesFromExtensions("reload");
 		}

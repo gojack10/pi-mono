@@ -302,6 +302,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.updateList();
 	}
 
+	private getModelSelectionError(model: Model<any>): string | undefined {
+		try {
+			return this.modelRuntime.getProvider(model.provider)?.modelSelectionError?.(model);
+		} catch (error) {
+			return `ERROR: ${model.provider}/${model.id} selection check failed: ${error instanceof Error ? error.message : String(error)}`;
+		}
+	}
+
 	private updateList(): void {
 		this.listContainer.clear();
 
@@ -320,13 +328,15 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const isSelected = i === this.selectedIndex;
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
 			const isDefault = this.isDefaultModel(item.model);
-			const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
+			const defaultBadge = isDefault ? " · default" : "";
+			const selectionError = this.getModelSelectionError(item.model);
 
-			const cursor = isSelected ? theme.fg("accent", "→ ") : "  ";
-			const currentMarker = isCurrent ? theme.fg("accent", "✓ ") : "  ";
-			const modelText = isSelected ? theme.fg("accent", item.id) : item.id;
-			const providerBadge = theme.fg("muted", `[${item.provider}]`);
-			const line = `${cursor}${currentMarker}${modelText} ${providerBadge}${defaultBadge}`;
+			const cursor = isSelected ? "→ " : "  ";
+			const currentMarker = isCurrent ? "✓ " : "  ";
+			const text = `${cursor}${currentMarker}${item.id} [${item.provider}]${defaultBadge}${selectionError ? " [BLOCKED]" : ""}`;
+			const line = selectionError
+				? theme.fg("error", text)
+				: `${theme.fg("accent", cursor)}${theme.fg("accent", currentMarker)}${isSelected ? theme.fg("accent", item.id) : item.id} ${theme.fg("muted", `[${item.provider}]${defaultBadge}`)}`;
 
 			this.listContainer.addChild(new Text(line, 0, 0));
 		}
@@ -411,6 +421,13 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private handleSelect(model: Model<any>): void {
+		const selectionError = this.getModelSelectionError(model);
+		if (selectionError) {
+			this.errorMessage = selectionError;
+			this.updateList();
+			this.tui.requestRender();
+			return;
+		}
 		this.dispose();
 		this.onSelectCallback(model);
 	}

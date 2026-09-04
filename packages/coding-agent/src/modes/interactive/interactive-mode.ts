@@ -3432,6 +3432,12 @@ export class InteractiveMode {
 				this.ui.requestRender();
 				break;
 
+			case "model_changed":
+				this.footer.invalidate();
+				this.updateEditorBorderColor();
+				this.ui.requestRender();
+				break;
+
 			case "thinking_level_changed":
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
@@ -5712,6 +5718,7 @@ export class InteractiveMode {
 	private getLoginProviderOptions(authType?: "oauth" | "api_key"): AuthSelectorProvider[] {
 		const options: AuthSelectorProvider[] = [];
 		for (const provider of this.session.modelRuntime.getProviders()) {
+			if (provider.selectable === false) continue;
 			const authStatus = this.session.modelRuntime.getProviderAuthStatus(provider.id);
 			const status = authStatus.configured
 				? {

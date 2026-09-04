@@ -59,6 +59,7 @@ function testProvider(input: {
 	getModels?: () => readonly Model<Api>[];
 	refreshModels?: Provider["refreshModels"];
 	calls?: ProviderCall[];
+	selectable?: boolean;
 }): Provider {
 	const models = input.models ?? [testModel(input.id, "model-a")];
 	const respond = (model: Model<Api>, options: StreamOptions | undefined) => {
@@ -73,6 +74,7 @@ function testProvider(input: {
 	return {
 		id: input.id,
 		name: input.id,
+		selectable: input.selectable,
 		auth: input.auth ?? { apiKey: ambientAuth },
 		getModels: input.getModels ?? (() => models),
 		refreshModels: input.refreshModels,
@@ -823,6 +825,7 @@ describe("Models runtime", () => {
 		const models = createModels({ credentials });
 		models.setProvider(testProvider({ id: "ambient", auth: { apiKey: envKeyAuth("env-key") } }));
 		models.setProvider(testProvider({ id: "missing", auth: { apiKey: envKeyAuth(undefined) } }));
+		models.setProvider(testProvider({ id: "hidden", selectable: false }));
 		models.setProvider(
 			testProvider({
 				id: "oauth",
@@ -849,6 +852,8 @@ describe("Models runtime", () => {
 		expect(refreshes).toBe(0);
 		expect((await models.getAvailable()).map((model) => model.provider)).toEqual(["ambient", "oauth"]);
 		expect((await models.getAvailable("ambient")).map((model) => model.provider)).toEqual(["ambient"]);
+		expect(await models.getAvailable("hidden")).toEqual([]);
+		expect(await models.checkAuth("hidden")).toMatchObject({ type: "api_key" });
 	});
 
 	it("runs provider login and logout through the credential store", async () => {

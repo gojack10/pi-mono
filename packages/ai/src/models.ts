@@ -141,9 +141,18 @@ type ProviderModel<TApi extends Api> = Model<TApi> | ImageModel<ImageApi> | Clas
  * their operation-specific API unions. Inside a `Models` collection providers
  * are held as `Provider<Api>`.
  */
+export interface ModelResolutionContext {
+	readonly previousModel?: Model<Api>;
+	getModel(providerId: string, modelId: string): Model<Api> | undefined;
+	hasAuth(providerId: string): Promise<boolean>;
+}
+
 export interface Provider<TApi extends Api = Api> {
 	readonly id: string;
 	readonly name: string;
+	readonly selectable?: boolean;
+	modelSelectionError?(model: Model<TApi>): string | undefined;
+	resolveModel?(model: Model<TApi>, context: ModelResolutionContext): Model<Api> | Promise<Model<Api>>;
 
 	readonly baseUrl?: string;
 	readonly headers?: ProviderHeaders;
@@ -685,10 +694,12 @@ class ModelsImpl implements MutableModels {
 			? [this.providers.get(providerId)].filter((entry) => entry !== undefined)
 			: this.getProviders();
 		const checks = await Promise.all(
-			providers.map(async (provider) => {
-				const credential = await this.readCredential(provider.id, signal);
-				return { provider, credential, auth: await this.checkProviderAuth(provider, credential, signal) };
-			}),
+			providers
+				.filter((provider) => provider.selectable !== false)
+				.map(async (provider) => {
+					const credential = await this.readCredential(provider.id, signal);
+					return { provider, credential, auth: await this.checkProviderAuth(provider, credential, signal) };
+				}),
 		);
 		return checks.filter((entry) => entry.auth !== undefined);
 	}
