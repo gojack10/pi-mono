@@ -56,6 +56,33 @@ describe("model selector", () => {
 		selector.dispose();
 	});
 
+	it("renders and refuses dynamically blocked models", async () => {
+		harness = await createHarness();
+		const model = harness.getModel();
+		const provider = harness.session.modelRuntime.getProvider(model.provider) as
+			| { modelSelectionError?: () => string | undefined }
+			| undefined;
+		expect(provider).toBeDefined();
+		provider!.modelSelectionError = () => "ERROR: quota blocked";
+		let selected = false;
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			model,
+			harness.session.modelRuntime,
+			[],
+			() => {
+				selected = true;
+			},
+			() => {},
+		);
+
+		expect(stripAnsi(selector.render(120).join("\n"))).toContain(`[${model.provider}] [BLOCKED]`);
+		(selector as unknown as { handleSelect(value: unknown): void }).handleSelect(model);
+		expect(selected).toBe(false);
+		expect(stripAnsi(selector.render(120).join("\n"))).toContain("ERROR: quota blocked");
+		await expect(harness.session.setModel(model)).rejects.toThrow("ERROR: quota blocked");
+	});
+
 	it("lists every catalog that failed to refresh", async () => {
 		harness = await createHarness();
 		vi.spyOn(harness.session.modelRuntime, "refresh").mockResolvedValue({

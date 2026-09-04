@@ -195,10 +195,22 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
+	const defaultProvider = settingsManager.getDefaultProvider();
+	const defaultModelId = settingsManager.getDefaultModel();
+	const deferredInitialModel =
+		!model &&
+		!hasExistingSession &&
+		defaultProvider &&
+		defaultModelId &&
+		!modelRuntime.getModel(defaultProvider, defaultModelId)
+			? { provider: defaultProvider, modelId: defaultModelId }
+			: undefined;
+	const restoredModel = existingSession.model
+		? modelRuntime.getModel(existingSession.model.provider, existingSession.model.modelId)
+		: undefined;
 
 	// If session has data, try to restore model from it
 	if (!model && hasExistingSession && existingSession.model) {
-		const restoredModel = modelRuntime.getModel(existingSession.model.provider, existingSession.model.modelId);
 		if (restoredModel && modelRuntime.hasConfiguredAuth(restoredModel.provider)) {
 			model = restoredModel;
 		}
@@ -212,8 +224,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const result = await findInitialModel({
 			scopedModels: [],
 			isContinuing: hasExistingSession,
-			defaultProvider: settingsManager.getDefaultProvider(),
-			defaultModelId: settingsManager.getDefaultModel(),
+			defaultProvider,
+			defaultModelId,
 			defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
 			modelThinkingLevels: settingsManager.getAllModelThinkingLevels(),
 			modelRuntime,
@@ -225,6 +237,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
 		}
 	}
+
+	if (model) model = await modelRuntime.resolveModel(model, restoredModel);
 
 	let thinkingLevel = options.thinkingLevel;
 
@@ -399,6 +413,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		deferredInitialModel,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

@@ -40,6 +40,12 @@ describe("OAuthSelectorComponent", () => {
 				name: "Google Vertex AI",
 				auth: { apiKey: { name: "Google Cloud credentials" } },
 			},
+			{
+				id: "hidden-account",
+				name: "Hidden account",
+				selectable: false,
+				auth: { oauth: { name: "Hidden OAuth", login: async () => ({}) } },
+			},
 		];
 		const fakeThis = {
 			session: {
@@ -52,6 +58,7 @@ describe("OAuthSelectorComponent", () => {
 		};
 
 		const apiKeyOptions = getLoginProviderOptions.call(fakeThis, "api_key");
+		expect(getLoginProviderOptions.call(fakeThis).some((option) => option.id === "hidden-account")).toBe(false);
 		expect(apiKeyOptions).toMatchObject([
 			{
 				id: "anthropic",

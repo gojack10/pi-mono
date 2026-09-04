@@ -278,7 +278,11 @@ export class ModelRuntime implements Models {
 		this.snapshot = {
 			...this.snapshot,
 			all,
-			available: all.filter((model) => this.snapshot.configuredProviders.has(model.provider)),
+			available: all.filter(
+				(model) =>
+					this.snapshot.configuredProviders.has(model.provider) &&
+					this.models.getProvider(model.provider)?.selectable !== false,
+			),
 		};
 	}
 
@@ -395,6 +399,19 @@ export class ModelRuntime implements Models {
 
 	getModel(providerId: string, modelId: string): Model<Api> | undefined {
 		return this.models.getModel(providerId, modelId);
+	}
+
+	async resolveModel(model: Model<Api>, previousModel?: Model<Api>): Promise<Model<Api>> {
+		const resolver = this.getProvider(model.provider)?.resolveModel;
+		if (!resolver) return model;
+		const resolved = await resolver(model, {
+			previousModel,
+			getModel: (providerId, modelId) => this.getModel(providerId, modelId),
+			hasAuth: async (providerId) => !!(await this.checkAuth(providerId)),
+		});
+		const registered = this.getModel(resolved.provider, resolved.id);
+		if (!registered) throw new Error(`Model resolver returned unknown model ${resolved.provider}/${resolved.id}`);
+		return registered;
 	}
 
 	async checkAuth(providerId: string, options?: AuthOperationOptions): Promise<AuthCheck | undefined> {
