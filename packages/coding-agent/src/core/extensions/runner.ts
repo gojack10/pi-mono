@@ -882,10 +882,11 @@ export class ExtensionRunner {
 		return result as RunnerEmitResult<TEvent>;
 	}
 
-	async emitMessageEnd(event: MessageEndEvent): Promise<AgentMessage | undefined> {
+	async emitMessageEnd(event: MessageEndEvent): Promise<MessageEndEventResult | undefined> {
 		const ctx = this.createContext();
 		let currentMessage = event.message;
 		let modified = false;
+		let retry = false;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("message_end");
@@ -895,7 +896,9 @@ export class ExtensionRunner {
 				try {
 					const currentEvent: MessageEndEvent = { ...event, message: currentMessage };
 					const handlerResult = (await handler(currentEvent, ctx)) as MessageEndEventResult | undefined;
-					if (!handlerResult?.message) continue;
+					if (!handlerResult) continue;
+					retry ||= handlerResult.retry === true;
+					if (!handlerResult.message) continue;
 
 					if (handlerResult.message.role !== currentMessage.role) {
 						this.emitError({
@@ -921,7 +924,9 @@ export class ExtensionRunner {
 			}
 		}
 
-		return modified ? currentMessage : undefined;
+		return modified || retry
+			? { ...(modified ? { message: currentMessage } : {}), ...(retry ? { retry: true } : {}) }
+			: undefined;
 	}
 
 	async emitToolResult(event: ToolResultEvent): Promise<ToolResultEventResult | undefined> {

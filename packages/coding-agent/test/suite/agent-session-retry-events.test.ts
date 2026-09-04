@@ -2,7 +2,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
-import { createHarness, type Harness } from "./harness.ts";
+import { createHarness, getUserTexts, type Harness } from "./harness.ts";
 
 function normalizeEventOrder(events: Harness["events"]): string[] {
 	const normalized: string[] = [];
@@ -141,6 +141,62 @@ describe("AgentSession retry and event characterization", () => {
 
 		expect(harness.faux.state.callCount).toBe(1);
 		expect(harness.eventsOfType("auto_retry_start")).toEqual([]);
+	});
+
+	it("lets an extension immediately retry the same zero-output turn", async () => {
+		const harness = await createHarness({
+			models: [
+				{ id: "faux-1", reasoning: true },
+				{ id: "faux-2", reasoning: true },
+			],
+			settings: { retry: { enabled: false } },
+			extensionFactories: [
+				(pi) => {
+					let retried = false;
+					pi.on("message_end", async (event, ctx) => {
+						if (event.message.role !== "assistant" || retried) return;
+						retried = true;
+						const next = ctx.modelRegistry.find(ctx.model!.provider, "faux-2")!;
+						expect(await pi.setModel(next)).toBe(true);
+						return { retry: true };
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.session.setThinkingLevel("medium");
+		harness.setResponses([
+			fauxAssistantMessage([], { stopReason: "error", errorMessage: "account quota exhausted" }),
+			fauxAssistantMessage("recovered"),
+		]);
+
+		await harness.session.prompt("same request");
+
+		expect(harness.faux.state.callCount).toBe(2);
+		expect(harness.session.model?.id).toBe("faux-2");
+		expect(harness.session.thinkingLevel).toBe("medium");
+		expect(getUserTexts(harness)).toEqual(["same request"]);
+		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([true, false]);
+		expect(harness.eventsOfType("auto_retry_start")).toEqual([]);
+	});
+
+	it("rejects extension retry for an assistant error carrying output", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("message_end", (event) => (event.message.role === "assistant" ? { retry: true } : undefined));
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("partial", { stopReason: "error", errorMessage: "account quota exhausted" }),
+		]);
+
+		await harness.session.prompt("test");
+
+		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.eventsOfType("agent_end").map((event) => event.willRetry)).toEqual([false]);
 	});
 
 	it("cancels retry sleep when abortRetry is called", async () => {

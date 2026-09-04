@@ -645,6 +645,7 @@ export class AgentSession {
 
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
+	private _extensionRetryMessages = new WeakSet<AssistantMessage>();
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
@@ -742,15 +743,16 @@ export class AgentSession {
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
-		const settings = this.settingsManager.getRetrySettings();
-		if (!settings.enabled || this._retryAttempt >= settings.maxRetries) {
-			return false;
-		}
-
 		for (let i = event.messages.length - 1; i >= 0; i--) {
 			const message = event.messages[i];
 			if (message.role === "assistant") {
-				return this._isRetryableError(message as AssistantMessage);
+				if (this._extensionRetryMessages.has(message as AssistantMessage)) return true;
+				const settings = this.settingsManager.getRetrySettings();
+				return (
+					settings.enabled &&
+					this._retryAttempt < settings.maxRetries &&
+					this._isRetryableError(message as AssistantMessage)
+				);
 			}
 		}
 		return false;
@@ -825,7 +827,8 @@ export class AgentSession {
 				type: "message_end",
 				message: event.message,
 			};
-			const replacement = await this._extensionRunner.emitMessageEnd(extensionEvent);
+			const result = await this._extensionRunner.emitMessageEnd(extensionEvent);
+			const replacement = result?.message;
 			if (replacement) {
 				// Untyped extension handlers can return messages with null/missing content;
 				// normalize so it never enters agent state or session history.
@@ -838,6 +841,9 @@ export class AgentSession {
 						? ({ ...replacement, content: [] } as AgentMessage)
 						: replacement;
 				this._replaceMessageInPlace(event.message, normalized);
+			}
+			if (result?.retry && event.message.role === "assistant" && this._isSafeExtensionRetry(event.message)) {
+				this._extensionRetryMessages.add(event.message);
 			}
 		} else if (event.type === "tool_execution_start") {
 			const extensionEvent: ToolExecutionStartEvent = {
@@ -1141,6 +1147,12 @@ export class AgentSession {
 		this._lastAssistantMessage = undefined;
 		if (!msg) {
 			return false;
+		}
+
+		if (this._extensionRetryMessages.delete(msg)) {
+			const messages = this.agent.state.messages;
+			if (messages.at(-1) === msg) this.agent.state.messages = messages.slice(0, -1);
+			return true;
 		}
 
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
@@ -2899,6 +2911,18 @@ export class AgentSession {
 		// Context overflow is handled by compaction, not retry.
 		if (isContextOverflow(message, this.model?.contextWindow ?? 0)) return false;
 		return isRetryableAssistantError(message);
+	}
+
+	private _isSafeExtensionRetry(message: AssistantMessage): boolean {
+		return (
+			message.stopReason === "error" &&
+			message.content.every(
+				(block) =>
+					(block.type === "text" && block.text.length === 0) ||
+					(block.type === "thinking" && block.thinking.length === 0),
+			) &&
+			message.usage.output === 0
+		);
 	}
 
 	/**

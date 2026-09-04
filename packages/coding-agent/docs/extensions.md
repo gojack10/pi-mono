@@ -619,6 +619,7 @@ Fired for message lifecycle updates.
 - `message_start` and `message_end` fire for user, assistant, and toolResult messages.
 - `message_update` fires for assistant streaming updates.
 - `message_end` handlers can return `{ message }` to replace the finalized message. The replacement must keep the same `role`.
+- They can return `{ retry: true }` to immediately retry a zero-output assistant error through the same continuation. Pi rejects retry requests for responses containing generated content, tool calls, or output usage; extensions must bound their own attempts.
 
 ```typescript
 pi.on("message_start", async (event, ctx) => {
