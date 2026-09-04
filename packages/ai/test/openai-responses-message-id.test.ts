@@ -34,7 +34,9 @@ describe("OpenAI Responses message ID conversion", () => {
 			messages: [{ role: "user", content: "hello", timestamp: Date.now() - 2000 }, assistant],
 		});
 
-		const input = convertResponsesMessages(model, context, new Set(["openai", "openai-codex", "opencode"]));
+		const input = convertResponsesMessages(model, context, (provider) =>
+			new Set(["openai", "openai-codex", "opencode"]).has(provider),
+		);
 		const messageIds = input
 			.filter(
 				(item): item is ResponseOutputMessage =>

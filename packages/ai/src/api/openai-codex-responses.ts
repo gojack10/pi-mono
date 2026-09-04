@@ -59,6 +59,8 @@ const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
 // endpoint (the same endpoint the official Codex client compresses against).
 const REQUEST_COMPRESSION_ZSTD_LEVEL = 3;
 const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
+export const isCodexToolCallProvider = (provider: string): boolean =>
+	CODEX_TOOL_CALL_PROVIDERS.has(provider) || provider.startsWith("openai-codex-");
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const PREVIOUS_RESPONSE_NOT_FOUND_CODE = "previous_response_not_found";
@@ -539,7 +541,7 @@ function buildRequestBody(
 	const supportsAdditionalTools = model.compat?.supportsAdditionalTools ?? false;
 	const supportsToolSearch = model.compat?.supportsToolSearch ?? false;
 	const transcriptTools = resolveTranscriptTools(context.messages, supportsAdditionalTools || supportsToolSearch);
-	const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
+	const messages = convertResponsesMessages(model, context, isCodexToolCallProvider, {
 		includeSystemPrompt: false,
 		grammarToolInputProperties,
 		supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
@@ -1566,7 +1568,7 @@ async function processWebSocketStream(
 			const responseItems = convertResponsesMessages(
 				model,
 				normalizeContext({ messages: [output] }),
-				CODEX_TOOL_CALL_PROVIDERS,
+				isCodexToolCallProvider,
 				{
 					includeSystemPrompt: false,
 					grammarToolInputProperties,

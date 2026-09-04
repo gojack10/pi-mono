@@ -135,7 +135,7 @@ describe("OpenAI Responses tool-call namespaces", () => {
 		const replayed = convertResponsesMessages(
 			model,
 			normalizeContext({ messages: [output] }),
-			new Set(["openai"]),
+			(provider) => provider === "openai",
 		).find((item) => item.type === "function_call");
 		expect(replayed).toMatchObject({
 			type: "function_call",
@@ -162,9 +162,12 @@ describe("OpenAI Responses tool-call namespaces", () => {
 			namespace: "dynamic_tools",
 		});
 
-		const replayed = convertResponsesMessages(model, normalizeContext({ messages: [output] }), new Set(["openai"]), {
-			grammarToolInputProperties,
-		}).find((item) => item.type === "custom_tool_call");
+		const replayed = convertResponsesMessages(
+			model,
+			normalizeContext({ messages: [output] }),
+			(provider) => provider === "openai",
+			{ grammarToolInputProperties },
+		).find((item) => item.type === "custom_tool_call");
 		expect(replayed).toMatchObject({
 			type: "custom_tool_call",
 			id: "ctc_test",
@@ -209,7 +212,7 @@ describe("OpenAI Responses tool-call namespaces", () => {
 			const replayed = convertResponsesMessages(
 				targetModel,
 				normalizeContext({ messages: [output] }),
-				new Set(["openai"]),
+				(provider) => provider === "openai",
 				{
 					grammarToolInputProperties: new Map([["query", "input"]]),
 				},
@@ -235,7 +238,7 @@ describe("OpenAI Responses tool-call namespaces", () => {
 		const replayed = convertResponsesMessages(
 			model,
 			normalizeContext({ messages: [output] }),
-			new Set(["openai"]),
+			(provider) => provider === "openai",
 		).find((item) => item.type === "function_call");
 		expect(replayed).toBeDefined();
 		expect(replayed).not.toHaveProperty("namespace");

@@ -46,7 +46,9 @@ describe("OpenAI Responses convertResponsesMessages empty tool result", () => {
 			],
 		});
 
-		const input = convertResponsesMessages(model, context, new Set(["openai", "openai-codex", "opencode"]));
+		const input = convertResponsesMessages(model, context, (provider) =>
+			new Set(["openai", "openai-codex", "opencode"]).has(provider),
+		);
 		const functionCallOutput = input.find((item) => item.type === "function_call_output") as
 			| { type: "function_call_output"; output: string }
 			| undefined;

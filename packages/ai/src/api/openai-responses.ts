@@ -313,7 +313,7 @@ function buildParams(
 		context.messages,
 		compat.supportsAdditionalTools || compat.supportsToolSearch,
 	);
-	const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
+	const messages = convertResponsesMessages(model, context, (provider) => OPENAI_TOOL_CALL_PROVIDERS.has(provider), {
 		grammarToolInputProperties,
 		supportsMidConvoSystemMessages: compat.supportsMidConvoSystemMessages,
 		supportsAdditionalTools: compat.supportsAdditionalTools,
