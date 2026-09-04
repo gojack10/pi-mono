@@ -346,6 +346,32 @@ function migrateToCurrentVersion(entries: FileEntry[]): boolean {
 	return true;
 }
 
+/**
+ * Repair malformed trees where an entry points at something other than another
+ * entry id. This protects old/manual session-name edits that accidentally used
+ * the session header UUID as parentId, which creates a detached metadata branch
+ * and makes the resumed chat appear empty.
+ */
+function repairDanglingParentIds(entries: FileEntry[]): boolean {
+	const entryIds = new Set<string>();
+	for (const entry of entries) {
+		if (entry.type !== "session") entryIds.add(entry.id);
+	}
+
+	let changed = false;
+	let previousEntryId: string | null = null;
+	for (const entry of entries) {
+		if (entry.type === "session") continue;
+		if (entry.parentId !== null && !entryIds.has(entry.parentId)) {
+			entry.parentId = previousEntryId;
+			changed = true;
+		}
+		previousEntryId = entry.id;
+	}
+
+	return changed;
+}
+
 /** Exported for testing */
 export function migrateSessionEntries(entries: FileEntry[]): void {
 	migrateToCurrentVersion(entries);
@@ -1089,9 +1115,9 @@ export class SessionManager {
 			this.fileEntries = entries;
 			this.sessionId = header.id;
 
-			if (migrateToCurrentVersion(this.fileEntries)) {
-				this._rewriteFile();
-			}
+			const migrated = migrateToCurrentVersion(this.fileEntries);
+			const repairedParents = repairDanglingParentIds(this.fileEntries);
+			if (migrated || repairedParents) this._rewriteFile();
 		} else {
 			this.newSession(options);
 			this.fileEntries = this.fileEntries.concat(entries);
