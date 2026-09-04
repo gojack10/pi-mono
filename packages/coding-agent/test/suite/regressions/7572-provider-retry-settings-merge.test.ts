@@ -4,7 +4,7 @@ import { InMemorySettingsStorage, SettingsManager } from "../../../src/core/sett
 describe("regression #7572: nested provider retry settings merge", () => {
 	it("preserves global provider settings not overridden by the project", () => {
 		const storage = new InMemorySettingsStorage();
-		storage.withLock("global", () =>
+		storage.withLock("global", "legacy", () =>
 			JSON.stringify({
 				retry: {
 					provider: {
@@ -14,7 +14,7 @@ describe("regression #7572: nested provider retry settings merge", () => {
 				},
 			}),
 		);
-		storage.withLock("project", () =>
+		storage.withLock("project", "legacy", () =>
 			JSON.stringify({
 				retry: {
 					provider: {

@@ -26,7 +26,7 @@ describe("settings diagnostics", () => {
 
 	it("falls back to the settings scope for storage without file paths", () => {
 		const storage: SettingsStorage = {
-			withLock(scope, fn) {
+			withLock(scope, _layer, fn) {
 				if (scope === "global") throw new Error("backend failed");
 				fn(undefined);
 			},

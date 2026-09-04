@@ -111,6 +111,90 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("split settings", () => {
+		it("should merge shared, legacy, and local settings layers", () => {
+			writeFileSync(
+				join(agentDir, "settings.shared.json"),
+				JSON.stringify({
+					theme: "dark",
+					compaction: { enabled: true, reserveTokens: 1000 },
+					defaultProvider: "shared-provider",
+				}),
+			);
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({
+					theme: "legacy-theme",
+					compaction: { keepRecentTokens: 5000 },
+				}),
+			);
+			writeFileSync(
+				join(agentDir, "settings.local.json"),
+				JSON.stringify({
+					defaultProvider: "local-provider",
+					defaultModel: "local-model",
+					compaction: { reserveTokens: 2000 },
+				}),
+			);
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+
+			expect(manager.getTheme()).toBe("legacy-theme");
+			expect(manager.getDefaultProvider()).toBe("local-provider");
+			expect(manager.getDefaultModel()).toBe("local-model");
+			expect(manager.getCompactionSettings()).toEqual({
+				enabled: true,
+				reserveTokens: 2000,
+				keepRecentTokens: 5000,
+			});
+		});
+
+		it("should write volatile model defaults to local settings when split is active", async () => {
+			const sharedPath = join(agentDir, "settings.shared.json");
+			const localPath = join(agentDir, "settings.local.json");
+			writeFileSync(
+				sharedPath,
+				JSON.stringify({
+					theme: "dark",
+					packages: ["git:github.com/example/pi-tools"],
+				}),
+			);
+			writeFileSync(localPath, JSON.stringify({ defaultProvider: "deepseek" }));
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setDefaultModelAndProvider("openai-codex-bto", "gpt-5.5");
+			manager.setDefaultThinkingLevel("xhigh");
+			await manager.flush();
+
+			const sharedSettings = JSON.parse(readFileSync(sharedPath, "utf-8"));
+			const localSettings = JSON.parse(readFileSync(localPath, "utf-8"));
+			expect(sharedSettings.defaultProvider).toBeUndefined();
+			expect(sharedSettings.defaultModel).toBeUndefined();
+			expect(sharedSettings.defaultThinkingLevel).toBeUndefined();
+			expect(sharedSettings.packages).toEqual(["git:github.com/example/pi-tools"]);
+			expect(localSettings.defaultProvider).toBe("openai-codex-bto");
+			expect(localSettings.defaultModel).toBe("gpt-5.5");
+			expect(localSettings.defaultThinkingLevel).toBe("xhigh");
+		});
+
+		it("should write shared settings to shared file when split is active", async () => {
+			const sharedPath = join(agentDir, "settings.shared.json");
+			const localPath = join(agentDir, "settings.local.json");
+			writeFileSync(sharedPath, JSON.stringify({ theme: "dark" }));
+			writeFileSync(localPath, JSON.stringify({ defaultModel: "local-model" }));
+
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setTheme("light");
+			await manager.flush();
+
+			const sharedSettings = JSON.parse(readFileSync(sharedPath, "utf-8"));
+			const localSettings = JSON.parse(readFileSync(localPath, "utf-8"));
+			expect(sharedSettings.theme).toBe("light");
+			expect(localSettings.defaultModel).toBe("local-model");
+			expect(localSettings.theme).toBeUndefined();
+		});
+	});
+
 	describe("packages migration", () => {
 		it("should keep local-only extensions in extensions array", () => {
 			const settingsPath = join(agentDir, "settings.json");
