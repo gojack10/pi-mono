@@ -88,6 +88,7 @@ export function configureHttpDispatcher(timeoutMs: number = DEFAULT_HTTP_IDLE_TI
 			allowH2: false,
 			// Keep HTTP origins on CONNECT tunnels as they were before Undici 8.7.
 			proxyTunnel: true,
+			connectTimeout: 120_000,
 			bodyTimeout: normalizedTimeoutMs,
 			connect: {
 				autoSelectFamilyAttemptTimeout: DEFAULT_AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS,
