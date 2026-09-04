@@ -15,7 +15,11 @@ function createUsage(totalTokens: number): Usage {
 	};
 }
 
-function createAssistant(timestamp: number, totalTokens: number): AssistantMessage {
+function createAssistant(
+	timestamp: number,
+	totalTokens: number,
+	overrides?: Partial<AssistantMessage>,
+): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text: "kept" }],
@@ -25,6 +29,7 @@ function createAssistant(timestamp: number, totalTokens: number): AssistantMessa
 		usage: createUsage(totalTokens),
 		stopReason: "stop",
 		timestamp,
+		...overrides,
 	};
 }
 
@@ -78,5 +83,18 @@ describe("context token estimation", () => {
 			trailingTokens: 1,
 			lastUsageIndex: 3,
 		});
+	});
+
+	it("does not clamp output from another model's token usage", () => {
+		const context = normalizeContext({
+			systemPrompt: "system",
+			messages: [
+				{ role: "user", content: "x".repeat(4_000), timestamp: 100 },
+				createAssistant(200, 12_000, { provider: "anthropic", model: "claude", api: "anthropic-messages" }),
+				{ role: "user", content: "tail", timestamp: 300 },
+			],
+		});
+
+		expect(buildBaseOptions(model, context).maxTokens).toBe(4_900);
 	});
 });

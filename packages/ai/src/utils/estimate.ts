@@ -1,4 +1,13 @@
-import type { AssistantMessage, ImageContent, Message, TextContent, TranscriptContext, Usage } from "../types.ts";
+import type {
+	Api,
+	AssistantMessage,
+	ImageContent,
+	Message,
+	Model,
+	TextContent,
+	TranscriptContext,
+	Usage,
+} from "../types.ts";
 import { getSystemMessageText } from "./text.ts";
 
 export interface ContextUsageEstimate {
@@ -68,7 +77,10 @@ export function estimateMessageTokens(message: Message): number {
 	return Math.ceil(chars / CHARS_PER_TOKEN);
 }
 
-function getLastAssistantUsageInfo(messages: readonly Message[]): { usage: Usage; index: number } | undefined {
+function getLastAssistantUsageInfo(
+	messages: readonly Message[],
+	model?: Model<Api>,
+): { usage: Usage; index: number } | undefined {
 	let latestPrefixTimestamp = Number.NEGATIVE_INFINITY;
 	let usageInfo: { usage: Usage; index: number } | undefined;
 
@@ -79,8 +91,12 @@ function getLastAssistantUsageInfo(messages: readonly Message[]): { usage: Usage
 			// A newer prefix message was inserted after this response (for example, a
 			// compaction summary), so its usage cannot describe the current prefix.
 			const usageAppliesToPrefix = assistant.timestamp >= latestPrefixTimestamp;
+			const usageMatchesModel =
+				!model ||
+				(assistant.provider === model.provider && assistant.model === model.id && assistant.api === model.api);
 			if (
 				usageAppliesToPrefix &&
+				usageMatchesModel &&
 				assistant.stopReason !== "aborted" &&
 				assistant.stopReason !== "error" &&
 				calculateContextTokens(assistant.usage) > 0
@@ -94,9 +110,12 @@ function getLastAssistantUsageInfo(messages: readonly Message[]): { usage: Usage
 	return usageInfo;
 }
 
-export function estimateContextTokens(context: TranscriptContext | readonly Message[]): ContextUsageEstimate {
+export function estimateContextTokens(
+	context: TranscriptContext | readonly Message[],
+	model?: Model<Api>,
+): ContextUsageEstimate {
 	const messages = "messages" in context ? context.messages : context;
-	const usageInfo = getLastAssistantUsageInfo(messages);
+	const usageInfo = getLastAssistantUsageInfo(messages, model);
 	if (usageInfo) {
 		const usageTokens = calculateContextTokens(usageInfo.usage);
 		let trailingTokens = 0;
