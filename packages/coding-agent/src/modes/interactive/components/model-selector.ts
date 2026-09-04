@@ -72,6 +72,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private readonly refreshAbortController = new AbortController();
 	private refreshTimeout?: ReturnType<typeof setTimeout>;
 	private closed = false;
+	private modelOrder?: ReadonlySet<string>;
 
 	constructor(
 		tui: TUI,
@@ -83,6 +84,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		initialSearchInput?: string,
 		onSelectAsDefault?: (model: Model<any>) => void,
 		defaultModel?: DefaultModelReference,
+		modelOrder?: ReadonlySet<string>,
 	) {
 		super();
 
@@ -95,6 +97,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.onSelectCallback = onSelect;
 		this.onSelectAsDefaultCallback = onSelectAsDefault;
 		this.onCancelCallback = onCancel;
+		this.modelOrder = modelOrder;
 
 		// Add top border
 		this.addChild(new DynamicBorder());
@@ -169,11 +172,13 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const refreshed = this.modelRuntime.getModel(scoped.model.provider, scoped.model.id);
 			return refreshed ? { ...scoped, model: refreshed } : scoped;
 		});
-		this.scopedModelItems = this.scopedModels.map((scoped) => ({
-			provider: scoped.model.provider,
-			id: scoped.model.id,
-			model: scoped.model,
-		}));
+		this.scopedModelItems = this.sortModels(
+			this.scopedModels.map((scoped) => ({
+				provider: scoped.model.provider,
+				id: scoped.model.id,
+				model: scoped.model,
+			})),
+		);
 		this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
 		this.filteredModels = this.activeModels;
 		const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
@@ -230,8 +235,17 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private sortModels(models: ModelItem[]): ModelItem[] {
 		const sorted = [...models];
-		// Sort: current model first, default model second, then by provider.
+		const recencyRank = new Map<string, number>();
+		if (this.modelOrder) {
+			let rank = 0;
+			for (const modelKey of this.modelOrder) {
+				recencyRank.set(modelKey, rank++);
+			}
+		}
 		sorted.sort((a, b) => {
+			const aRecency = recencyRank.get(`${a.provider}/${a.id}`) ?? Number.MAX_SAFE_INTEGER;
+			const bRecency = recencyRank.get(`${b.provider}/${b.id}`) ?? Number.MAX_SAFE_INTEGER;
+			if (aRecency !== bRecency) return aRecency - bRecency;
 			const aIsCurrent = modelsAreEqual(this.currentModel, a.model);
 			const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
 			if (aIsCurrent && !bIsCurrent) return -1;
