@@ -2,6 +2,19 @@
 
 This reference lists user-configurable settings, their types, defaults, and purposes. Project settings override agent-directory settings. Resource lists are combined. See [Configuration](configuration.md) for file locations and trust behavior.
 
+Each scope can be split into tracked shared settings and ignored local overrides:
+
+| Location | Scope |
+|---|---|
+| `~/.pi/agent/settings.shared.json` | Global shared settings |
+| `~/.pi/agent/settings.local.json` | Global local overrides |
+| `.pi/settings.shared.json` | Project shared settings |
+| `.pi/settings.local.json` | Project local overrides |
+
+Within a scope, Pi merges `settings.shared.json`, legacy `settings.json`, then `settings.local.json`; later files override earlier files, and nested objects are merged. Project settings then override global settings.
+
+When split settings are active, Pi writes volatile model-selection fields (`lastChangelogVersion`, `defaultProvider`, `defaultModel`, `defaultThinkingLevel`, and `enabledModels`) to `settings.local.json`. Other settings go to `settings.shared.json`. If neither split file exists, Pi writes to legacy `settings.json`.
+
 ## Model and thinking
 
 <a id="model-cycling"></a>
