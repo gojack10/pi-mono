@@ -35,6 +35,15 @@ describe("isContextOverflow", () => {
 		expect(isContextOverflow(message, 32768)).toBe(true);
 	});
 
+	it("detects generic OpenAI-compatible context errors", () => {
+		for (const errorMessage of [
+			"400 Prompt too long: 130399 tokens exceeds max context window of 130000 tokens",
+			"Input tokens exceeded available context size",
+		]) {
+			expect(isContextOverflow(createErrorMessage(errorMessage), 130000)).toBe(true);
+		}
+	});
+
 	it("detects Together AI context length errors", () => {
 		const message = createErrorMessage(
 			"400 The input (516368 tokens) is longer than the model's context length (262144 tokens).",
