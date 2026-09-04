@@ -1439,6 +1439,8 @@ export interface ToolResultEventResult {
 export interface MessageEndEventResult {
 	/** Replace the finalized message. The replacement must keep the original message role. */
 	message?: AgentMessage;
+	/** Immediately retry a zero-output assistant error. The extension must bound its own attempts. */
+	retry?: boolean;
 }
 
 export interface BeforeAgentStartEventResult {
