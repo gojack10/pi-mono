@@ -35,11 +35,12 @@ import type { AssistantMessage } from "../types.ts";
  * - Ollama: Some deployments truncate silently, others return errors like "prompt too long; exceeded max context length by X tokens"
  */
 const OVERFLOW_PATTERNS = [
-	/prompt (?:is )?too long/i, // Anthropic and z.ai token overflow
+	/prompt (?:is )?too long/i, // Anthropic, z.ai, and generic OpenAI-compatible overflow
 	/prompt exceeds max length/i, // z.ai CN endpoint token overflow
 	/request_too_large/i, // Anthropic request byte-size overflow (HTTP 413)
 	/input is too long for requested model/i, // Amazon Bedrock
 	/exceeds the context window/i, // OpenAI (Completions & Responses API)
+	/exceed(?:s|ed)? (?:the )?(?:(?:model'?s|allowed|available) )?(?:max(?:imum)? )?context (?:window|length|limit|size)/i, // Generic context-bound overflow
 	/exceeds (?:the )?(?:model'?s )?maximum context length(?: of [\d,]+ tokens?|\s*\([\d,]+\))/i, // OpenAI-compatible proxies (LiteLLM)
 	/input token count.*exceeds the maximum/i, // Google (Gemini)
 	/maximum prompt length is \d+/i, // xAI (Grok)
