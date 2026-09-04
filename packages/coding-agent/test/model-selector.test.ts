@@ -79,6 +79,32 @@ describe("model selector", () => {
 		expect(saveDefault).toHaveBeenCalledWith(currentModel);
 	});
 
+	it("orders models by recent use", async () => {
+		harness = await createHarness({
+			models: [
+				{ id: "current-model", name: "Current Model", reasoning: true },
+				{ id: "recent-model", name: "Recent Model", reasoning: true },
+			],
+		});
+		const currentModel = harness.getModel("current-model")!;
+		const selector = new ModelSelectorComponent(
+			createFakeTui(),
+			currentModel,
+			harness.session.modelRuntime,
+			[],
+			() => {},
+			() => {},
+			undefined,
+			undefined,
+			undefined,
+			new Set([`${currentModel.provider}/recent-model`]),
+		);
+		const rendered = stripAnsi(selector.render(120).join("\n"));
+
+		expect(rendered.indexOf("recent-model [")).toBeLessThan(rendered.indexOf("current-model ["));
+		selector.dispose();
+	});
+
 	it("renders and refuses dynamically blocked models", async () => {
 		harness = await createHarness();
 		const model = harness.getModel();
