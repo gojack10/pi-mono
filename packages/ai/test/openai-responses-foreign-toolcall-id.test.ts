@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isCodexToolCallProvider } from "../src/api/openai-codex-responses.ts";
 import { convertResponsesMessages } from "../src/api/openai-responses-shared.ts";
 import { getModel } from "../src/compat.ts";
 import type { AssistantMessage, Context, ToolResultMessage, Usage } from "../src/types.ts";
@@ -17,6 +18,12 @@ const usage: Usage = {
 };
 
 describe("OpenAI Responses foreign tool call ID normalization", () => {
+	it("recognizes Codex account aliases by provider prefix", () => {
+		expect(isCodexToolCallProvider("openai-codex-personal")).toBe(true);
+		expect(isCodexToolCallProvider("openai-codex-future-alias")).toBe(true);
+		expect(isCodexToolCallProvider("azure-openai-responses")).toBe(false);
+	});
+
 	it("hashes foreign Copilot tool item IDs into a bounded Codex-safe fc_<hash> shape", () => {
 		const model = getModel("openai-codex", "gpt-5.5");
 		const assistant: AssistantMessage = {
@@ -49,7 +56,7 @@ describe("OpenAI Responses foreign tool call ID normalization", () => {
 			messages: [{ role: "user", content: "Use the tool.", timestamp: Date.now() - 3000 }, assistant, toolResult],
 		};
 
-		const input = convertResponsesMessages(model, context, new Set(["openai", "openai-codex", "opencode"]));
+		const input = convertResponsesMessages(model, context, isCodexToolCallProvider);
 		const functionCall = input.find((item) => item.type === "function_call");
 
 		expect(functionCall).toBeDefined();

@@ -74,7 +74,7 @@ function getReplayedReasoning(model: Model<"azure-openai-responses">, assistant:
 			{ role: "user", content: "follow-up", timestamp: Date.now() },
 		],
 	};
-	const input = convertResponsesMessages(model, context, new Set(["azure-openai-responses"]));
+	const input = convertResponsesMessages(model, context, (provider) => provider === "azure-openai-responses");
 	return input.find((item) => item.type === "reasoning");
 }
 

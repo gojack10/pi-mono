@@ -131,9 +131,11 @@ describe("OpenAI Responses tool-call namespaces", () => {
 			namespace: "dynamic_tools",
 		});
 
-		const replayed = convertResponsesMessages(model, { messages: [output] }, new Set(["openai"])).find(
-			(item) => item.type === "function_call",
-		);
+		const replayed = convertResponsesMessages(
+			model,
+			{ messages: [output] },
+			(provider) => provider === "openai",
+		).find((item) => item.type === "function_call");
 		expect(replayed).toMatchObject({
 			type: "function_call",
 			id: "fc_test",
@@ -159,7 +161,7 @@ describe("OpenAI Responses tool-call namespaces", () => {
 			namespace: "dynamic_tools",
 		});
 
-		const replayed = convertResponsesMessages(model, { messages: [output] }, new Set(["openai"]), {
+		const replayed = convertResponsesMessages(model, { messages: [output] }, (provider) => provider === "openai", {
 			grammarToolInputProperties,
 		}).find((item) => item.type === "custom_tool_call");
 		expect(replayed).toMatchObject({
@@ -203,9 +205,14 @@ describe("OpenAI Responses tool-call namespaces", () => {
 		];
 
 		for (const targetModel of targetModels) {
-			const replayed = convertResponsesMessages(targetModel, { messages: [output] }, new Set(["openai"]), {
-				grammarToolInputProperties: new Map([["query", "input"]]),
-			});
+			const replayed = convertResponsesMessages(
+				targetModel,
+				{ messages: [output] },
+				(provider) => provider === "openai",
+				{
+					grammarToolInputProperties: new Map([["query", "input"]]),
+				},
+			);
 			const functionCall = replayed.find((item) => item.type === "function_call");
 			const customToolCall = replayed.find((item) => item.type === "custom_tool_call");
 			expect(functionCall).toBeDefined();
@@ -224,9 +231,11 @@ describe("OpenAI Responses tool-call namespaces", () => {
 			arguments: { value: "hello" },
 		});
 
-		const replayed = convertResponsesMessages(model, { messages: [output] }, new Set(["openai"])).find(
-			(item) => item.type === "function_call",
-		);
+		const replayed = convertResponsesMessages(
+			model,
+			{ messages: [output] },
+			(provider) => provider === "openai",
+		).find((item) => item.type === "function_call");
 		expect(replayed).toBeDefined();
 		expect(replayed).not.toHaveProperty("namespace");
 	});

@@ -229,14 +229,14 @@ describe("constrained tool sampling", () => {
 		for (const invalidArguments of [{}, { payload: 42 }]) {
 			replayedToolCall.arguments = invalidArguments;
 			expect(() =>
-				convertResponsesMessages(makeModel(), context, new Set(["openai"]), {
+				convertResponsesMessages(makeModel(), context, (provider) => provider === "openai", {
 					grammarToolInputProperties: new Map([["sample_tool", "payload"]]),
 				}),
 			).toThrow('Grammar tool call "sample_tool" requires argument "payload" to be a string');
 		}
 
 		replayedToolCall.arguments = { payload: "abc" };
-		const messages = convertResponsesMessages(makeModel(), context, new Set(["openai"]), {
+		const messages = convertResponsesMessages(makeModel(), context, (provider) => provider === "openai", {
 			grammarToolInputProperties: new Map([["sample_tool", "payload"]]),
 		});
 

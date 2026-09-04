@@ -138,7 +138,7 @@ export interface ConvertResponsesToolsOptions {
 export function convertResponsesMessages<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
-	allowedToolCallProviders: ReadonlySet<string>,
+	isAllowedToolCallProvider: (provider: string) => boolean,
 	options?: ConvertResponsesMessagesOptions,
 ): ResponseInput {
 	const messages: ResponseInput = [];
@@ -156,7 +156,7 @@ export function convertResponsesMessages<TApi extends Api>(
 	};
 
 	const normalizeToolCallId = (id: string, _targetModel: Model<TApi>, source: AssistantMessage): string => {
-		if (!allowedToolCallProviders.has(model.provider)) return normalizeIdPart(id);
+		if (!isAllowedToolCallProvider(model.provider)) return normalizeIdPart(id);
 		if (!id.includes("|")) return normalizeIdPart(id);
 		const [callId, itemId] = id.split("|");
 		const normalizedCallId = normalizeIdPart(callId);
