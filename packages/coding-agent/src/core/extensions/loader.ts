@@ -26,9 +26,10 @@ import { CONFIG_DIR_NAME, getAgentDir, isBunBinary, isBundledNode } from "../../
 // avoiding a circular dependency. Extensions can import from @earendil-works/pi-coding-agent.
 import * as _bundledPiCodingAgent from "../../index.ts";
 import { resolvePath } from "../../utils/paths.ts";
+import { normalizeErrorRecord } from "../error-record.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
-import { execCommand } from "../exec.ts";
+import { execChecked, execCommand } from "../exec.ts";
 import { readPiManifest } from "../pi-manifest.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
@@ -194,6 +195,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		sendMessage: notInitialized,
 		sendUserMessage: notInitialized,
 		appendEntry: notInitialized,
+		recordError: notInitialized,
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
 		setLabel: notInitialized,
@@ -376,6 +378,11 @@ function createExtensionAPI(
 			runtime.appendEntry(customType, data);
 		},
 
+		recordError(record) {
+			assertActive();
+			return runtime.recordError(normalizeErrorRecord(record));
+		},
+
 		setSessionName(name: string): void {
 			assertActive();
 			runtime.setSessionName(name);
@@ -394,6 +401,11 @@ function createExtensionAPI(
 		exec(command: string, args: string[], options?: ExecOptions) {
 			assertActive();
 			return execCommand(command, args, options?.cwd ?? cwd, options);
+		},
+
+		execChecked(command: string, args: string[], options?: ExecOptions) {
+			assertActive();
+			return execChecked(command, args, options?.cwd ?? cwd, options);
 		},
 
 		getActiveTools(): string[] {

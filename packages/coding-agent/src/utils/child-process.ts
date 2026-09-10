@@ -46,11 +46,21 @@ export function spawnProcessSync(
  * us reading, while a quiet inherited handle (e.g. a Windows daemonized descendant
  * that never lets `close` fire) still releases us after the grace elapses.
  */
+export interface ChildProcessExit {
+	code: number | null;
+	signal: NodeJS.Signals | null;
+}
+
 export function waitForChildProcess(child: ChildProcess): Promise<number | null> {
+	return waitForChildProcessResult(child).then((result) => result.code);
+}
+
+export function waitForChildProcessResult(child: ChildProcess): Promise<ChildProcessExit> {
 	return new Promise((resolve, reject) => {
 		let settled = false;
 		let exited = false;
 		let exitCode: number | null = null;
+		let exitSignal: NodeJS.Signals | null = null;
 		let postExitTimer: NodeJS.Timeout | undefined;
 		let stdoutEnded = child.stdout === null;
 		let stderrEnded = child.stderr === null;
@@ -69,13 +79,13 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 			child.stderr?.removeListener("data", onData);
 		};
 
-		const finalize = (code: number | null) => {
+		const finalize = (code: number | null, signal = exitSignal) => {
 			if (settled) return;
 			settled = true;
 			cleanup();
 			child.stdout?.destroy();
 			child.stderr?.destroy();
-			resolve(code);
+			resolve({ code, signal });
 		};
 
 		const maybeFinalizeAfterExit = () => {
@@ -113,17 +123,18 @@ export function waitForChildProcess(child: ChildProcess): Promise<number | null>
 			reject(err);
 		};
 
-		const onExit = (code: number | null) => {
+		const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
 			exited = true;
 			exitCode = code;
+			exitSignal = signal;
 			maybeFinalizeAfterExit();
 			if (!settled) {
 				armIdleTimer();
 			}
 		};
 
-		const onClose = (code: number | null) => {
-			finalize(code);
+		const onClose = (code: number | null, signal: NodeJS.Signals | null) => {
+			finalize(code, signal ?? exitSignal);
 		};
 
 		child.stdout?.once("end", onStdoutEnd);

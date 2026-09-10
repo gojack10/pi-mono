@@ -270,6 +270,8 @@ Extension state persistence. Does NOT participate in LLM context.
 
 Use `customType` to identify your extension's entries on reload. Interactive mode can render custom entries via `pi.registerEntryRenderer(customType, renderer)`, but they still do not participate in LLM context.
 
+Pi's `pi.recordError()` uses the reserved `customType` `pi-error/v1` for bounded cross-process failure records. Its `data` contains `version: 1`, `source`, `operation`, `message`, and a string-only `correlation` object. It is storage evidence, not LLM context; arbitrary `Error` objects are never serialized.
+
 ### CustomMessageEntry
 
 Extension-injected messages that DO participate in LLM context.

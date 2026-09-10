@@ -1487,6 +1487,22 @@ pi.on("session_start", async (_event, ctx) => {
 });
 ```
 
+### pi.recordError(record)
+
+Persist one bounded, storage-safe error record and return its session entry ID. The record is a custom session entry and is not sent to the LLM. `recordError()` accepts structured strings only; it does not serialize an arbitrary `Error`. Callers provide only the correlation fields needed by a reader, and must omit secrets, full command arguments, and unrelated output.
+
+```typescript
+pi.recordError({
+  version: 1,
+  source: "my-extension",
+  operation: "publish",
+  message: "tmux exited 23: pane unavailable",
+  correlation: { job_id: "job-1", attempt_id: "attempt-1" },
+});
+```
+
+`source`, `operation`, and correlation values are bounded control-free strings. Messages are bounded to 2048 characters. Storage failures throw and should not be silently ignored.
+
 ### pi.setSessionName(name)
 
 Set the session display name (shown in session selector instead of first message).
@@ -1668,11 +1684,24 @@ if (pi.getFlag("plan")) {
 
 ### pi.exec(command, args, options?)
 
-Execute a shell command.
+Execute a shell command and return its raw result. Nonzero exits are represented in the result and do not throw.
 
 ```typescript
 const result = await pi.exec("git", ["status"], { signal, timeout: 5000 });
 // result.stdout, result.stderr, result.code, result.killed
+```
+
+### pi.execChecked(command, args, options?)
+
+Execute a shell command as a reusable discriminated result. A successful command returns `Success<ExecResult>`; a nonzero, killed, or signaled command returns `Failure<ExecFailure>` with the executable name, exit state, and bounded diagnostic. For a process terminated by an observed OS signal, `error.signal` contains that signal. Command arguments are excluded. This is opt-in; `pi.exec()` keeps its raw result semantics.
+
+```typescript
+const result = await pi.execChecked("git", ["status"], { timeout: 5000 });
+if (!result.ok) {
+  console.error(`${result.error.command} exited ${result.error.code}`);
+  return;
+}
+console.log(result.value.stdout);
 ```
 
 ### pi.getActiveTools() / pi.getAllTools() / pi.setActiveTools(names)
