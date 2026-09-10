@@ -255,6 +255,8 @@ Keep tool and event behavior independent from rendering so non-interactive modes
 
 Pi reports handler errors and continues where possible. A `tool_call` handler failure blocks the tool as a fail-safe; a tool execution failure becomes an error result for the model.
 
+`pi.exec()` returns the raw process result, including nonzero exits. Use `pi.execChecked()` for a discriminated success or bounded failure without command arguments. Use `pi.recordError()` to persist a bounded, storage-safe error record outside model context; omit secrets and unrelated output.
+
 Release resources in `session_shutdown` even when normal operation attempted cleanup.
 Keep cleanup idempotent because cancellation, reload, session replacement, and process exit can converge on the same path.
 Use `ctx.shutdown()` to request an orderly process shutdown.

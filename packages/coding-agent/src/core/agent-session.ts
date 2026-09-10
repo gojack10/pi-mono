@@ -80,6 +80,7 @@ import {
 	shouldCompact,
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL, THINKING_LEVEL_OPTIONS } from "./defaults.ts";
+import { ERROR_RECORD_ENTRY, type ErrorRecord, normalizeErrorRecord } from "./error-record.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
@@ -3418,6 +3419,15 @@ export class AgentSession {
 					if (entry) {
 						this._emit({ type: "entry_appended", entry });
 					}
+				},
+				recordError: (record: ErrorRecord) => {
+					const data = normalizeErrorRecord(record);
+					const entryId = this.sessionManager.appendCustomEntry(ERROR_RECORD_ENTRY, data);
+					const entry = this.sessionManager.getEntry(entryId);
+					if (entry) {
+						this._emit({ type: "entry_appended", entry });
+					}
+					return entryId;
 				},
 				setSessionName: (name) => {
 					this.setSessionName(name);

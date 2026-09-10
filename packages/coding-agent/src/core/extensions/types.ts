@@ -59,8 +59,9 @@ import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { BashResult } from "../bash-executor.ts";
 import type { CacheWarmingDecisionEvent, CacheWarmingDecisionEventResult } from "../cache-warmer.ts";
 import type { CompactionPreparation, CompactionResult } from "../compaction/index.ts";
+import type { ErrorRecord } from "../error-record.ts";
 import type { EventBus } from "../event-bus.ts";
-import type { ExecOptions, ExecResult } from "../exec.ts";
+import type { CheckedExecResult, ExecOptions, ExecResult } from "../exec.ts";
 import type { ReadonlyFooterDataProvider } from "../footer-data-provider.ts";
 import type { KeybindingsManager } from "../keybindings.ts";
 import type { McpServerConfig, McpServerRegistry, RegisteredMcpServer } from "../mcp-servers.ts";
@@ -101,7 +102,8 @@ import type {
 } from "../tools/index.ts";
 import type { ModelRoute, ModelRouteRequest, VirtualModelDefinition } from "../virtual-models.ts";
 
-export type { ExecOptions, ExecResult } from "../exec.ts";
+export type { ErrorRecord } from "../error-record.ts";
+export type { CheckedExecResult, ExecFailure, ExecOptions, ExecResult } from "../exec.ts";
 export type { BuildSystemPromptOptions, NormalizedBuildSystemPromptOptions } from "../system-prompt.ts";
 export type { AgentToolResult, AgentToolUpdateCallback, ToolExecutionMode };
 export type { AppKeybinding, KeybindingsManager } from "../keybindings.ts";
@@ -1706,8 +1708,14 @@ export interface ExtensionAPI {
 	/** Set or clear a label on an entry. Labels are user-defined markers for bookmarking/navigation. */
 	setLabel(entryId: string, label: string | undefined): void;
 
-	/** Execute a shell command. */
+	/** Execute a shell command and return its raw result, including nonzero exits. */
 	exec(command: string, args: string[], options?: ExecOptions): Promise<ExecResult>;
+
+	/** Execute a shell command as a Success or bounded Failure without changing exec() semantics. */
+	execChecked(command: string, args: string[], options?: ExecOptions): Promise<CheckedExecResult>;
+
+	/** Persist a bounded, storage-safe error record and return its session entry ID. */
+	recordError(record: ErrorRecord): string;
 
 	/** Get the names of the active tools, which are the tools declared to the model. */
 	getActiveTools(): string[];
@@ -2059,6 +2067,8 @@ export type SendUserMessageHandler = (
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
 
+export type RecordErrorHandler = (record: ErrorRecord) => string;
+
 export type SetSessionNameHandler = (name: string) => void;
 
 export type GetSessionNameHandler = () => string | undefined;
@@ -2134,6 +2144,7 @@ export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
 	sendUserMessage: SendUserMessageHandler;
 	appendEntry: AppendEntryHandler;
+	recordError: RecordErrorHandler;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;
 	setLabel: SetLabelHandler;

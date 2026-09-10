@@ -2,6 +2,7 @@
  * Extension system for lifecycle events and custom tools.
  */
 
+export type { Result } from "../result.ts";
 export type { SlashCommandInfo, SlashCommandSource } from "../slash-commands.ts";
 export type { SourceInfo } from "../source-info.ts";
 export {
@@ -48,6 +49,7 @@ export type {
 	BuildSystemPromptOptions,
 	CacheWarmingDecisionEvent,
 	CacheWarmingDecisionEventResult,
+	CheckedExecResult,
 	CompactionEntryDraft,
 	// Context
 	CompactOptions,
@@ -68,6 +70,8 @@ export type {
 	// Message and Entry Rendering
 	EntryRenderer,
 	EntryRenderOptions,
+	ErrorRecord,
+	ExecFailure,
 	ExecOptions,
 	ExecResult,
 	ExecuteToolOptions,
@@ -137,6 +141,7 @@ export type {
 	ProviderStreamEvent,
 	ReadToolCallEvent,
 	ReadToolResultEvent,
+	RecordErrorHandler,
 	// Commands
 	RegisteredCommand,
 	RegisteredTool,

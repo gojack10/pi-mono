@@ -12,9 +12,10 @@ import type { KeyId } from "@earendil-works/pi-tui";
 import type { createJiti } from "jiti";
 import { CONFIG_DIR_NAME, getAgentDir, isBunBinary, isBundledNode } from "../../config.ts";
 import { resolvePath } from "../../utils/paths.ts";
+import { normalizeErrorRecord } from "../error-record.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
-import { execCommand } from "../exec.ts";
+import { execChecked, execCommand } from "../exec.ts";
 import { type McpServerConfig, McpServerRegistry, mcpNamespace, validateMcpServerConfig } from "../mcp-servers.ts";
 import { readPiManifest } from "../pi-manifest.ts";
 import { createSyntheticSourceInfo, getSyntheticPathSource, isSyntheticPath } from "../source-info.ts";
@@ -173,6 +174,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		sendMessage: notInitialized,
 		sendUserMessage: notInitialized,
 		appendEntry: notInitialized,
+		recordError: notInitialized,
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
 		setLabel: notInitialized,
@@ -390,6 +392,11 @@ function createExtensionAPI(
 			runtime.appendEntry(customType, data);
 		},
 
+		recordError(record) {
+			assertActive();
+			return runtime.recordError(normalizeErrorRecord(record));
+		},
+
 		setSessionName(name: string): void {
 			assertActive();
 			runtime.setSessionName(name);
@@ -408,6 +415,11 @@ function createExtensionAPI(
 		exec(command: string, args: string[], options?: ExecOptions) {
 			assertActive();
 			return execCommand(command, args, options?.cwd ?? cwd, options);
+		},
+
+		execChecked(command: string, args: string[], options?: ExecOptions) {
+			assertActive();
+			return execChecked(command, args, options?.cwd ?? cwd, options);
 		},
 
 		getActiveTools(): string[] {

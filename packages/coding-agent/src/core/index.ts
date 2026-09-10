@@ -28,7 +28,15 @@ export {
 export { type BashExecutorOptions, type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 export type { CacheWarmingDecision, CacheWarmingStatus } from "./cache-warmer.ts";
 export type { CompactionResult } from "./compaction/index.ts";
+export { ERROR_RECORD_ENTRY, type ErrorRecord, normalizeErrorRecord } from "./error-record.ts";
 export { createEventBus, type EventBus, type EventBusController } from "./event-bus.ts";
+export {
+	type CheckedExecResult,
+	type ExecFailure,
+	type ExecOptions,
+	type ExecResult,
+	execChecked,
+} from "./exec.ts";
 export { areExperimentalFeaturesEnabled } from "./experimental.ts";
 // Extensions system
 export {
@@ -56,8 +64,6 @@ export {
 	type CustomMessageEntryDraft,
 	defineTool,
 	discoverAndLoadExtensions,
-	type ExecOptions,
-	type ExecResult,
 	type Extension,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -94,4 +100,5 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
+export { Failure, type Result, Success } from "./result.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";

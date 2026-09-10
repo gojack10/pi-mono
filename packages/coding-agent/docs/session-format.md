@@ -173,6 +173,8 @@ Use `customType` to identify your extension's entries on reload. Interactive mod
 
 Pi stores [virtual model](virtual-models.md) router state as custom entries with `customType` `pi.virtual-model-state` and `data` `{ provider, modelId, state }`.
 
+Pi's `pi.recordError()` uses the reserved `customType` `pi-error/v1` for bounded cross-process failure records. Its `data` contains `version: 1`, `source`, `operation`, `message`, and a string-only `correlation` object. It is storage evidence, not LLM context; arbitrary `Error` objects are never serialized.
+
 ### CustomMessageEntry
 
 Extension-injected messages that DO participate in LLM context.
