@@ -284,8 +284,6 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
-	/** Configured default unavailable until extensions register its provider. */
-	deferredInitialModel?: { provider: string; modelId: string };
 }
 
 export interface ExtensionBindings {
@@ -451,7 +449,6 @@ export class AgentSession {
 
 	private _modelRuntime: ModelRuntime;
 	private _cacheWarmer?: Pick<CacheWarmer, "cancel" | "status" | "onAgentSettled" | "onModeChanged" | "onWarmed">;
-	private _deferredInitialModel?: { provider: string; modelId: string };
 
 	// Tool registry for extension getTools/setTools
 	private _toolRegistry: Map<string, AgentTool> = new Map();
@@ -480,7 +477,6 @@ export class AgentSession {
 		if (this._cacheWarmer) {
 			this._cacheWarmer.onWarmed = (entry) => this._emit({ type: "entry_appended", entry });
 		}
-		this._deferredInitialModel = config.deferredInitialModel;
 		this._extensionRunnerRef = config.extensionRunnerRef;
 		this._initialActiveToolNames = config.initialActiveToolNames;
 		this._usesDefaultTools = config.usesDefaultTools ?? false;
@@ -2465,10 +2461,8 @@ export class AgentSession {
 	}
 
 	private async _resolveActiveProviderModel(): Promise<void> {
-		const deferred = this._deferredInitialModel;
-		this._deferredInitialModel = undefined;
-		const selected = deferred ? this._modelRuntime.getModel(deferred.provider, deferred.modelId) : this.model;
-		if (!selected || (!deferred && !this._modelRuntime.getProvider(selected.provider)?.resolveModel)) return;
+		const selected = this.model;
+		if (!selected || !this._modelRuntime.getProvider(selected.provider)?.resolveModel) return;
 		const resolved = await this._resolveSelectedModel(selected, this.model);
 		if (modelsAreEqual(this.model, resolved)) return;
 		this.agent.state.model = resolved;
@@ -2479,42 +2473,21 @@ export class AgentSession {
 	/**
 	 * Set model directly.
 	 * Validates that auth is configured and saves to the session transcript.
-	 * Persists to global defaults only when options.persist is true.
 	 * @throws Error if no auth is configured for the model
 	 */
-	async setModel(model: Model<any>, options: ModelMutationOptions = {}): Promise<void> {
-		const selectedModel = model;
+	async setModel(model: Model<any>): Promise<void> {
 		const previousModel = this.model;
 		model = await this._resolveSelectedModel(model, previousModel);
 
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(model);
 		this.agent.state.model = model;
 		this.sessionManager.appendModelChange(model.provider, model.id);
-		if (options.persist) {
-			this.settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id);
-			this._addPersistedDefaultToNonEmptyScope(selectedModel);
-		}
 
 		// Apply thinking level for the new model.
 		// Per-model thinking level overrides take priority over the global default.
-		// Model persistence does not implicitly rewrite the global thinking default.
 		this.setThinkingLevel(thinkingLevel);
 
 		await this._emitModelSelect(model, previousModel, "set");
-	}
-
-	private _addPersistedDefaultToNonEmptyScope(model: Model<any>): void {
-		if (this._scopedModels.length === 0) return;
-		if (this._scopedModels.some((scoped) => modelsAreEqual(scoped.model, model))) return;
-
-		this._scopedModels = [...this._scopedModels, { model }];
-
-		const enabledModels = this.settingsManager.getEnabledModels();
-		if (!enabledModels?.length) return;
-
-		const modelReference = `${model.provider}/${model.id}`;
-		if (enabledModels.some((pattern) => pattern.toLowerCase() === modelReference.toLowerCase())) return;
-		this.settingsManager.setEnabledModels([...enabledModels, modelReference]);
 	}
 
 	/**
@@ -2523,20 +2496,14 @@ export class AgentSession {
 	 * @param direction - "forward" (default) or "backward"
 	 * @returns The new model info, or undefined if only one model available
 	 */
-	async cycleModel(
-		direction: "forward" | "backward" = "forward",
-		options: ModelMutationOptions = {},
-	): Promise<ModelCycleResult | undefined> {
+	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
 		if (this._scopedModels.length > 0) {
-			return this._cycleScopedModel(direction, options);
+			return this._cycleScopedModel(direction);
 		}
-		return this._cycleAvailableModel(direction, options);
+		return this._cycleAvailableModel(direction);
 	}
 
-	private async _cycleScopedModel(
-		direction: "forward" | "backward",
-		options: ModelMutationOptions,
-	): Promise<ModelCycleResult | undefined> {
+	private async _cycleScopedModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
 		const availableIds = new Set(
 			this._modelRuntime.getAvailableSnapshot().map((model) => `${model.provider}\0${model.id}`),
 		);
@@ -2558,16 +2525,10 @@ export class AgentSession {
 		// Apply model
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
-		if (options.persist) {
-			this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
-			this._addPersistedDefaultToNonEmptyScope(next.model);
-		}
-
 		// Apply thinking level for the new model.
 		// - Explicit scoped model thinking level overrides defaults
 		// - Per-model thinking level overrides take priority over the global default
 		// setThinkingLevel clamps to model capabilities.
-		// Model persistence does not implicitly rewrite the global thinking default.
 		this.setThinkingLevel(thinkingLevel);
 
 		await this._emitModelSelect(nextModel, currentModel, "cycle");
@@ -2575,10 +2536,7 @@ export class AgentSession {
 		return { model: nextModel, thinkingLevel: this.thinkingLevel, isScoped: true };
 	}
 
-	private async _cycleAvailableModel(
-		direction: "forward" | "backward",
-		options: ModelMutationOptions,
-	): Promise<ModelCycleResult | undefined> {
+	private async _cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
 		const availableModels = this._modelRuntime.getAvailableSnapshot();
 		if (availableModels.length <= 1) return undefined;
 
@@ -2594,13 +2552,7 @@ export class AgentSession {
 		const thinkingLevel = this._getThinkingLevelForModelSwitch(nextModel);
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
-		if (options.persist) {
-			this.settingsManager.setDefaultModelAndProvider(selectedModel.provider, selectedModel.id);
-			this._addPersistedDefaultToNonEmptyScope(selectedModel);
-		}
-
 		// Apply thinking level for the new model.
-		// Model persistence does not implicitly rewrite the global thinking default.
 		this.setThinkingLevel(thinkingLevel);
 
 		await this._emitModelSelect(nextModel, currentModel, "cycle");

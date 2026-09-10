@@ -19,11 +19,7 @@ import { PresentationPlugins, SessionPlugins } from "../src/experimental/service
 import { SessionDirectory, SessionManagement } from "../src/experimental/services/sessions.ts";
 import { Transcript } from "../src/experimental/services/transcript.ts";
 import { createServerServiceBinding, createSessionServiceBinding } from "./experimental-service-binding.ts";
-import {
-	configureExperimentalWorkerModel,
-	createExperimentalSessions,
-	readExperimentalSessionState,
-} from "./experimental-session-support.ts";
+import { configureExperimentalWorkerModel, createExperimentalSessions } from "./experimental-session-support.ts";
 import { KeyedProbe } from "./fixtures/keyed-service.ts";
 
 const servers = new Set<RunningServer>();
@@ -116,31 +112,6 @@ describe("experimental durable server composition", () => {
 		const directory = await mkdtemp(join("/tmp", "pes-"));
 		directories.add(directory);
 		await expect(startServer({ directory, provider: "anthropic" })).rejects.toThrow("provider requires a model");
-	});
-
-	test("preserves an existing Session model when the server default changes", async () => {
-		await writeFile(
-			join(agentDir, "settings.json"),
-			JSON.stringify({ defaultProvider: "anthropic", defaultModel: "claude-opus-4-6" }),
-		);
-		const directory = await mkdtemp(join("/tmp", "pes-"));
-		directories.add(directory);
-		const first = await startServer({ directory });
-		servers.add(first);
-		const firstClient = await attachClient(first, "demo-1");
-		await firstClient.dispose();
-		clients.delete(firstClient);
-		await expect.poll(() => first.workerPids.has("demo-1")).toBe(false);
-		await first.close();
-
-		const second = await startServer({ ...sessionWorkerModel, directory });
-		servers.add(second);
-		const secondClient = await attachClient(second, "demo-1");
-		await secondClient.dispose();
-		clients.delete(secondClient);
-		await expect.poll(() => second.workerPids.has("demo-1")).toBe(false);
-		const state = await readExperimentalSessionState(second.sessionDir, "demo-1");
-		expect(state.model).toEqual({ provider: "anthropic", modelId: "claude-opus-4-6" });
 	});
 
 	test("rejects model options when discovery selects an existing server", async () => {
@@ -430,10 +401,10 @@ describe("experimental durable server composition", () => {
 		}
 	});
 
-	test("uses the most recently selected model for a new Session", async () => {
-		const directory = await mkdtemp(join("/tmp", "pes-model-default-"));
+	test("uses the explicit model for a new Session", async () => {
+		const directory = await mkdtemp(join("/tmp", "pes-model-selection-"));
 		directories.add(directory);
-		const runtime = await startServer({ directory });
+		const runtime = await startServer({ ...sessionWorkerModel, directory });
 		servers.add(runtime);
 		const firstClient = await attachClient(runtime, "demo-1");
 		const firstServices = createSessionServiceBinding(firstClient, { services: [Models] });
@@ -450,8 +421,8 @@ describe("experimental durable server composition", () => {
 		const secondModels = secondServices.use(Models);
 		await secondServices.ready(BACKGROUND_CONTEXT);
 		expect(secondModels.state.value?.configuration.model).toEqual({
-			provider: "anthropic",
-			modelId: "claude-opus-4-6",
+			provider: sessionWorkerModel.provider,
+			modelId: sessionWorkerModel.model,
 		});
 		await secondServices.dispose(BACKGROUND_CONTEXT);
 	});

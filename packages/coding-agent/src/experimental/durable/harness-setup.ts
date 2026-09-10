@@ -89,7 +89,7 @@ export interface InitialModel {
 
 /** The model a new root conversation starts with: an explicit `--provider`/`--model`, or pi's default resolution. */
 export async function findInitialAgentModel(
-	settingsManager: SettingsManager,
+	_settingsManager: SettingsManager,
 	modelRuntime: ModelRuntime,
 	cli?: { readonly provider?: string; readonly model: string },
 ): Promise<InitialModel> {
@@ -103,14 +103,7 @@ export async function findInitialAgentModel(
 			...(resolved.thinkingLevel === undefined ? {} : { thinkingLevel: resolved.thinkingLevel }),
 		};
 	}
-	const initial = await findInitialModel({
-		scopedModels: [],
-		isContinuing: false,
-		defaultProvider: settingsManager.getDefaultProvider(),
-		defaultModelId: settingsManager.getDefaultModel(),
-		defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
-		modelRuntime,
-	});
+	const initial = await findInitialModel({ modelRuntime });
 	return {
 		...(initial.model === undefined
 			? {}
@@ -118,6 +111,5 @@ export async function findInitialAgentModel(
 					model: { provider: initial.model.provider, modelId: initial.model.id },
 					thinkingLevel: initial.thinkingLevel,
 				}),
-		...(initial.fallbackMessage === undefined ? {} : { fallbackMessage: initial.fallbackMessage }),
 	};
 }

@@ -13,7 +13,9 @@ Each scope can be split into tracked shared settings and ignored local overrides
 
 Within a scope, Pi merges `settings.shared.json`, legacy `settings.json`, then `settings.local.json`; later files override earlier files, and nested objects are merged. Project settings then override global settings.
 
-When split settings are active, Pi writes volatile model-selection fields (`lastChangelogVersion`, `defaultProvider`, `defaultModel`, `defaultThinkingLevel`, and `enabledModels`) to `settings.local.json`. Other settings go to `settings.shared.json`. If neither split file exists, Pi writes to legacy `settings.json`.
+When split settings are active, Pi writes volatile fields (`lastChangelogVersion`, `defaultThinkingLevel`, and `enabledModels`) to `settings.local.json`. Other settings go to `settings.shared.json`. If neither split file exists, Pi writes to legacy `settings.json`.
+
+Model startup selection is owned by the model-recency extension: the most recent available model is selected. If the recency cache has no usable model, choose one from `/model`. Use `/thinking` and press Ctrl+S to save the startup thinking level.
 
 ## Model and thinking
 
@@ -21,8 +23,6 @@ When split settings are active, Pi writes volatile model-selection fields (`last
 
 | Setting | Type | Default | Description |
 |---|---|---|---|
-| `defaultProvider` | string | Automatic | Startup AI provider. |
-| `defaultModel` | string | Automatic | Startup model ID. |
 | `defaultThinkingLevel` | `"off" \| "minimal" \| "low" \| "medium" \| "high" \| "xhigh" \| "max"` | `"medium"` | Startup thinking level. |
 | `modelThinkingLevels` | object | None | Per-model startup thinking levels keyed by exact `provider/modelId`. |
 | `thinkingBudgets` | object | Built-in budgets | Token budgets for `minimal`, `low`, `medium`, and `high` thinking levels. |

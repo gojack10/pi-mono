@@ -5,7 +5,6 @@ import { clampThinkingLevel, type Message, type Model, streamSimple } from "@ear
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
-import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { CacheWarmer } from "./cache-warmer.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
@@ -31,7 +30,6 @@ import {
 	createWriteTool,
 	withFileMutationQueue,
 } from "./tools/index.ts";
-import { getBranchSelection } from "./virtual-models.ts";
 
 // Preserve the pre-0.81 fallback for extensions that construct Agent instances
 // or invoke low-level agent loops without supplying streamFn. Agent core remains
@@ -196,57 +194,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
 
 	let model = options.model;
-	let modelFallbackMessage: string | undefined;
-	const defaultProvider = settingsManager.getDefaultProvider();
-	const defaultModelId = settingsManager.getDefaultModel();
-	const deferredInitialModel =
-		!model &&
-		!hasExistingSession &&
-		defaultProvider &&
-		defaultModelId &&
-		!modelRuntime.getModel(defaultProvider, defaultModelId)
-			? { provider: defaultProvider, modelId: defaultModelId }
-			: undefined;
-	// Assistant messages name the physical model that answered, so a virtual selection is only in
-	// model_change entries.
-	const sessionModel = getBranchSelection(sessionManager.getBranch(), (provider, modelId) =>
-		modelRuntime.getModel(provider, modelId),
-	);
-
-	const restoredModel = sessionModel
-		? modelRuntime.getModel(sessionModel.provider, sessionModel.modelId)
-		: undefined;
-
-	// If session has data, try to restore model from it
-	if (!model && hasExistingSession && sessionModel) {
-		if (restoredModel && modelRuntime.hasConfiguredAuth(restoredModel.provider)) {
-			model = restoredModel;
-		}
-		if (!model) {
-			modelFallbackMessage = `Could not restore model ${sessionModel.provider}/${sessionModel.modelId}`;
-		}
-	}
-
-	// If still no model, use findInitialModel (checks settings default, then provider defaults)
+	// Leave implicit model selection to the model-recency extension. Session model
+	// history is intentionally not restored here; it must not outrank recency.
 	if (!model) {
-		const result = await findInitialModel({
-			scopedModels: [],
-			isContinuing: hasExistingSession,
-			defaultProvider,
-			defaultModelId,
-			defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
-			modelThinkingLevels: settingsManager.getAllModelThinkingLevels(),
-			modelRuntime,
-		});
+		const result = await findInitialModel({ modelRuntime });
 		model = result.model;
-		if (!model) {
-			modelFallbackMessage = formatNoModelsAvailableMessage();
-		} else if (modelFallbackMessage) {
-			modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
-		}
 	}
 
-	if (model) model = await modelRuntime.resolveProviderModel(model, restoredModel);
+	if (model) model = await modelRuntime.resolveProviderModel(model);
 
 	let thinkingLevel = options.thinkingLevel;
 
@@ -464,7 +419,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
-		deferredInitialModel,
 	});
 
 	const extensionsResult = resourceLoader.getExtensions();
@@ -472,6 +426,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	return {
 		session,
 		extensionsResult,
-		modelFallbackMessage,
+		modelFallbackMessage: undefined,
 	};
 }

@@ -95,13 +95,12 @@ describe("model selector", () => {
 			() => {},
 			() => {},
 			undefined,
-			undefined,
-			undefined,
 			new Set([`${currentModel.provider}/recent-model`]),
 		);
 		const rendered = stripAnsi(selector.render(120).join("\n"));
 
 		expect(rendered.indexOf("recent-model [")).toBeLessThan(rendered.indexOf("current-model ["));
+		expect(rendered).not.toContain("default");
 		selector.dispose();
 	});
 

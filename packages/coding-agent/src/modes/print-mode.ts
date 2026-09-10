@@ -119,14 +119,14 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 	};
 
 	try {
+		await rebindSession();
+
 		if (mode === "json") {
 			const header = session.sessionManager.getHeader();
 			if (header) {
 				writeRawStdout(`${JSON.stringify(header)}\n`);
 			}
 		}
-
-		await rebindSession();
 
 		if (initialMessage) {
 			await session.prompt(initialMessage, { images: initialImages });

@@ -98,7 +98,6 @@ export function createModelsService(
 				{ model: { provider: selected.provider, modelId: selected.id }, thinkingLevel },
 				context,
 			);
-			settingsManager?.setDefaultModelAndProvider(selected.provider, selected.id);
 			await settingsManager?.flush();
 		},
 		async selectThinking(level, context) {

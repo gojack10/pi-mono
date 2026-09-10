@@ -132,8 +132,6 @@ export type PackageSource =
 
 export interface Settings {
 	lastChangelogVersion?: string;
-	defaultProvider?: string;
-	defaultModel?: string;
 	defaultThinkingLevel?: ThinkingLevel;
 	modelThinkingLevels?: Record<string, ThinkingLevel>; // per-model default thinking level overrides keyed by "provider/modelId"
 	transport?: TransportSetting; // default: "auto"
@@ -275,8 +273,6 @@ const LOCAL_SETTINGS_FILENAME = "settings.local.json";
 
 const LOCAL_SETTINGS_FIELDS = new Set<keyof Settings>([
 	"lastChangelogVersion",
-	"defaultProvider",
-	"defaultModel",
 	"defaultThinkingLevel",
 	"enabledModels",
 ]);
@@ -357,7 +353,7 @@ export class FileSettingsStorage implements SettingsStorage {
 		let found = false;
 		for (const path of [paths.shared, paths.legacy, paths.local]) {
 			if (!existsSync(path)) continue;
-			const parsed = JSON.parse(readFileSync(path, "utf-8")) as Settings;
+			const parsed = JSON.parse(stripBom(readFileSync(path, "utf-8"))) as Settings;
 			merged = deepMergeSettings(merged, parsed);
 			found = true;
 		}
@@ -905,34 +901,6 @@ export class SettingsManager {
 	getSessionDir(): string | undefined {
 		const sessionDir = this.settings.sessionDir;
 		return sessionDir ? normalizePath(sessionDir) : sessionDir;
-	}
-
-	getDefaultProvider(): string | undefined {
-		return this.settings.defaultProvider;
-	}
-
-	getDefaultModel(): string | undefined {
-		return this.settings.defaultModel;
-	}
-
-	setDefaultProvider(provider: string): void {
-		this.globalSettings.defaultProvider = provider;
-		this.markModified("defaultProvider");
-		this.save();
-	}
-
-	setDefaultModel(modelId: string): void {
-		this.globalSettings.defaultModel = modelId;
-		this.markModified("defaultModel");
-		this.save();
-	}
-
-	setDefaultModelAndProvider(provider: string, modelId: string): void {
-		this.globalSettings.defaultProvider = provider;
-		this.globalSettings.defaultModel = modelId;
-		this.markModified("defaultProvider");
-		this.markModified("defaultModel");
-		this.save();
 	}
 
 	getSteeringMode(): "all" | "one-at-a-time" {

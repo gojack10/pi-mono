@@ -75,6 +75,8 @@ Compare @previous.csv with @current.csv and summarize the important changes.
 
 Type `@` in the editor to search for a file instead of entering its full path. When Pi finishes, review its response and any changed files. Use version control or backups for important work. For untrusted or unattended work, use a container or another sandbox. See [Security](security.md).
 
+Use `/model` or Ctrl+L to choose a model for the current session. New sessions start with the most recent available model from the model-recency extension. Use `/thinking` to choose a thinking level for the current session, or Ctrl+S in that picker to save the startup default thinking level. Use Shift+Tab to cycle thinking level. Use Ctrl+P / Shift+Ctrl+P to cycle through scoped models.
+
 ## Continue later
 
 Pi saves sessions automatically. Exit Pi, then resume the most recent session for the same working folder with:

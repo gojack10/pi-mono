@@ -27,11 +27,6 @@ interface ScopedModelItem {
 	thinkingLevel?: string;
 }
 
-interface DefaultModelReference {
-	provider: string;
-	id: string;
-}
-
 type ModelScope = "all" | "scoped";
 
 /**
@@ -58,14 +53,12 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private currentModel?: Model<any>;
 	private modelRuntime: ModelRuntime;
 	private onSelectCallback: (model: Model<any>) => void;
-	private onSelectAsDefaultCallback?: (model: Model<any>) => void;
 	private onCancelCallback: () => void;
 	private errorMessage?: string;
 	private refreshStatusMessage = "Refreshing model catalogs…";
 	private refreshStatusSuccess = false;
 	private tui: TUI;
 	private scopedModels: ReadonlyArray<ScopedModelItem>;
-	private defaultModel?: DefaultModelReference;
 	private scope: ModelScope = "all";
 	private scopeText?: Text;
 	private scopeHintText?: Text;
@@ -82,8 +75,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		onSelect: (model: Model<any>) => void,
 		onCancel: () => void,
 		initialSearchInput?: string,
-		onSelectAsDefault?: (model: Model<any>) => void,
-		defaultModel?: DefaultModelReference,
 		modelOrder?: ReadonlySet<string>,
 	) {
 		super();
@@ -92,10 +83,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.currentModel = currentModel;
 		this.modelRuntime = modelRuntime;
 		this.scopedModels = scopedModels;
-		this.defaultModel = defaultModel;
 		this.scope = scopedModels.length > 0 ? "scoped" : "all";
 		this.onSelectCallback = onSelect;
-		this.onSelectAsDefaultCallback = onSelectAsDefault;
 		this.onCancelCallback = onCancel;
 		this.modelOrder = modelOrder;
 
@@ -137,18 +126,16 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 
 		// Hint
-		if (this.onSelectAsDefaultCallback) {
-			this.addChild(
-				new Text(
-					theme.fg(
-						"dim",
-						`  ${keyDisplayText("tui.select.confirm")} to select · ${keyDisplayText("app.models.save")} to set as default · ${keyDisplayText("tui.select.cancel")} to cancel`,
-					),
-					0,
-					0,
+		this.addChild(
+			new Text(
+				theme.fg(
+					"dim",
+					`  ${keyDisplayText("tui.select.confirm")} to select · ${keyDisplayText("tui.select.cancel")} to cancel`,
 				),
-			);
-		}
+				0,
+				0,
+			),
+		);
 
 		// Add bottom border
 		this.addChild(new DynamicBorder());
@@ -250,10 +237,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const bIsCurrent = modelsAreEqual(this.currentModel, b.model);
 			if (aIsCurrent && !bIsCurrent) return -1;
 			if (!aIsCurrent && bIsCurrent) return 1;
-			const aIsDefault = this.isDefaultModel(a.model);
-			const bIsDefault = this.isDefaultModel(b.model);
-			if (aIsDefault && !bIsDefault) return -1;
-			if (!aIsDefault && bIsDefault) return 1;
 			return a.provider.localeCompare(b.provider);
 		});
 		return sorted;
@@ -267,15 +250,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private getScopeHintText(): string {
 		return keyHint("tui.input.tab", "scope") + theme.fg("muted", " (all/scoped)");
-	}
-
-	private isDefaultModel(model: Model<any>): boolean {
-		return this.defaultModel?.provider === model.provider && this.defaultModel.id === model.id;
-	}
-
-	private isDefaultSearch(query: string): boolean {
-		const normalized = query.trim().toLowerCase();
-		return normalized.length > 0 && "default".startsWith(normalized);
 	}
 
 	private setScope(scope: ModelScope): void {
@@ -292,20 +266,9 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private filterModels(query: string): void {
 		if (query) {
-			const filtered = fuzzyFilter(this.activeModels, query, (item) => {
-				const defaultText = this.isDefaultModel(item.model) ? " default" : "";
-				return `${getModelSelectorSearchText({ id: item.id, provider: item.provider, name: item.model.name })}${defaultText}`;
-			});
-			if (this.isDefaultSearch(query)) {
-				const defaultItems = this.activeModels.filter((item) => this.isDefaultModel(item.model));
-				const defaultKeys = new Set(defaultItems.map((item) => `${item.provider}\0${item.id}`));
-				this.filteredModels = [
-					...defaultItems,
-					...filtered.filter((item) => !defaultKeys.has(`${item.provider}\0${item.id}`)),
-				];
-			} else {
-				this.filteredModels = filtered;
-			}
+			this.filteredModels = fuzzyFilter(this.activeModels, query, (item) =>
+				getModelSelectorSearchText({ id: item.id, provider: item.provider, name: item.model.name }),
+			);
 		} else {
 			this.filteredModels = this.activeModels;
 		}
@@ -341,16 +304,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 			const isSelected = i === this.selectedIndex;
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
-			const isDefault = this.isDefaultModel(item.model);
-			const defaultBadge = isDefault ? " · default" : "";
 			const selectionError = this.getModelSelectionError(item.model);
 
 			const cursor = isSelected ? "→ " : "  ";
 			const currentMarker = isCurrent ? "✓ " : "  ";
-			const text = `${cursor}${currentMarker}${item.id} [${item.provider}]${defaultBadge}${selectionError ? " [BLOCKED]" : ""}`;
+			const text = `${cursor}${currentMarker}${item.id} [${item.provider}]${selectionError ? " [BLOCKED]" : ""}`;
 			const line = selectionError
 				? theme.fg("error", text)
-				: `${theme.fg("accent", cursor)}${theme.fg("accent", currentMarker)}${isSelected ? theme.fg("accent", item.id) : item.id} ${theme.fg("muted", `[${item.provider}]${defaultBadge}`)}`;
+				: `${theme.fg("accent", cursor)}${theme.fg("accent", currentMarker)}${isSelected ? theme.fg("accent", item.id) : item.id} ${theme.fg("muted", `[${item.provider}]`)}`;
 
 			this.listContainer.addChild(new Text(line, 0, 0));
 		}
@@ -418,14 +379,6 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		else if (kb.matches(keyData, "tui.select.cancel")) {
 			this.dispose();
 			this.onCancelCallback();
-		}
-		// Select and save as default
-		else if (kb.matches(keyData, "app.models.save") && this.onSelectAsDefaultCallback) {
-			const selectedModel = this.filteredModels[this.selectedIndex];
-			if (selectedModel) {
-				this.dispose();
-				this.onSelectAsDefaultCallback(selectedModel.model);
-			}
 		}
 		// Pass everything else to search input
 		else {
