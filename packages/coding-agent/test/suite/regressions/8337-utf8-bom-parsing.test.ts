@@ -32,16 +32,10 @@ describe("issue #8337 UTF-8 BOM parsing", () => {
 		mkdirSync(join(projectDir, ".pi"), { recursive: true });
 		mkdirSync(agentDir, { recursive: true });
 		const globalSettingsPath = join(agentDir, "settings.json");
-		writeFileSync(globalSettingsPath, `\uFEFF${JSON.stringify({ defaultModel: "global-model" })}`);
-		writeFileSync(
-			join(projectDir, ".pi", "settings.json"),
-			`\uFEFF${JSON.stringify({ defaultProvider: "project-provider" })}`,
-		);
+		writeFileSync(globalSettingsPath, `\uFEFF${JSON.stringify({ theme: "light" })}`);
+		writeFileSync(join(projectDir, ".pi", "settings.json"), `\uFEFF${JSON.stringify({ theme: "dark" })}`);
 
 		const settings = SettingsManager.create(projectDir, agentDir);
-		expect(settings.getDefaultModel()).toBe("global-model");
-		expect(settings.getDefaultProvider()).toBe("project-provider");
-
 		settings.setTheme("dark");
 		await settings.flush();
 		expect(readFileSync(globalSettingsPath, "utf-8")).not.toMatch(/^\uFEFF/);

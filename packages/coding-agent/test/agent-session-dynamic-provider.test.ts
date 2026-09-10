@@ -53,11 +53,8 @@ describe("AgentSession dynamic provider registration", () => {
 	async function createSession(
 		extensionFactories: ExtensionFactory[],
 		model: Model<any> | null = getModel("anthropic", "claude-sonnet-4-5")!,
-		configuredDefault?: { provider: string; modelId: string },
 	) {
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
-		if (configuredDefault)
-			settingsManager.setDefaultModelAndProvider(configuredDefault.provider, configuredDefault.modelId);
 		const sessionManager = SessionManager.inMemory();
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify("anthropic", async () => ({ type: "api_key", key: "test-key" }));
@@ -98,7 +95,7 @@ describe("AgentSession dynamic provider registration", () => {
 		return baseUrl;
 	}
 
-	it("replaces a built-in fallback with a configured extension provider default", async () => {
+	it("does not invent a provider fallback before extension selection", async () => {
 		const base = getModel("anthropic", "claude-sonnet-4-5")!;
 		const selected = { ...base, provider: "selector" };
 		const resolved = { ...base, provider: "resolved" };
@@ -120,12 +117,11 @@ describe("AgentSession dynamic provider registration", () => {
 				},
 			],
 			null,
-			{ provider: "selector", modelId: selected.id },
 		);
 
-		expect(session.model?.provider).toBe("anthropic");
+		expect(session.model?.provider).toBe("unknown");
 		await session.bindExtensions({});
-		expect(session.model?.provider).toBe("resolved");
+		expect(session.model?.provider).toBe("unknown");
 		session.dispose();
 	});
 

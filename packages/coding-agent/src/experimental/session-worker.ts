@@ -811,14 +811,7 @@ async function createCodingAgentHarness(
 	const settingsManager = SettingsManager.create(session.metadata.cwd);
 	let resolved: Awaited<ReturnType<typeof findInitialModel>> | ReturnType<typeof resolveCliModel>;
 	if (options.model === undefined) {
-		resolved = await findInitialModel({
-			scopedModels: [],
-			isContinuing: true,
-			defaultProvider: settingsManager.getDefaultProvider(),
-			defaultModelId: settingsManager.getDefaultModel(),
-			defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
-			modelRuntime,
-		});
+		resolved = await findInitialModel({ modelRuntime });
 	} else {
 		resolved = resolveCliModel({
 			cliProvider: options.provider,

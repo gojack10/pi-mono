@@ -4,7 +4,6 @@ import { clampThinkingLevel, type Message, type Model, streamSimple } from "@ear
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
-import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import type { ExtensionRunner, LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { convertToLlm } from "./messages.ts";
@@ -194,51 +193,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
 
 	let model = options.model;
-	let modelFallbackMessage: string | undefined;
-	const defaultProvider = settingsManager.getDefaultProvider();
-	const defaultModelId = settingsManager.getDefaultModel();
-	const deferredInitialModel =
-		!model &&
-		!hasExistingSession &&
-		defaultProvider &&
-		defaultModelId &&
-		!modelRuntime.getModel(defaultProvider, defaultModelId)
-			? { provider: defaultProvider, modelId: defaultModelId }
-			: undefined;
-	const restoredModel = existingSession.model
-		? modelRuntime.getModel(existingSession.model.provider, existingSession.model.modelId)
-		: undefined;
-
-	// If session has data, try to restore model from it
-	if (!model && hasExistingSession && existingSession.model) {
-		if (restoredModel && modelRuntime.hasConfiguredAuth(restoredModel.provider)) {
-			model = restoredModel;
-		}
-		if (!model) {
-			modelFallbackMessage = `Could not restore model ${existingSession.model.provider}/${existingSession.model.modelId}`;
-		}
-	}
-
-	// If still no model, use findInitialModel (checks settings default, then provider defaults)
+	// Leave implicit model selection to the model-recency extension. Session model
+	// history is intentionally not restored here; it must not outrank recency.
 	if (!model) {
-		const result = await findInitialModel({
-			scopedModels: [],
-			isContinuing: hasExistingSession,
-			defaultProvider,
-			defaultModelId,
-			defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
-			modelThinkingLevels: settingsManager.getAllModelThinkingLevels(),
-			modelRuntime,
-		});
+		const result = await findInitialModel({ modelRuntime });
 		model = result.model;
-		if (!model) {
-			modelFallbackMessage = formatNoModelsAvailableMessage();
-		} else if (modelFallbackMessage) {
-			modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
-		}
 	}
 
-	if (model) model = await modelRuntime.resolveModel(model, restoredModel);
+	if (model) model = await modelRuntime.resolveModel(model);
 
 	let thinkingLevel = options.thinkingLevel;
 
@@ -413,13 +375,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
-		deferredInitialModel,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 
 	return {
 		session,
 		extensionsResult,
-		modelFallbackMessage,
+		modelFallbackMessage: undefined,
 	};
 }

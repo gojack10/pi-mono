@@ -42,11 +42,9 @@ describe("AgentSession model and extension characterization", () => {
 				.filter((entry) => entry.type === "model_change")
 				.map((entry) => `${entry.provider}/${entry.modelId}`),
 		).toEqual([`${nextModel.provider}/${nextModel.id}`]);
-		expect(harness.settingsManager.getDefaultProvider()).toBeUndefined();
-		expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
 	});
 
-	it("only persists model and thinking defaults when requested", async () => {
+	it("persists thinking defaults but never model defaults", async () => {
 		const harness = await createHarness({
 			models: [
 				{ id: "faux-1", name: "One", reasoning: true },
@@ -57,15 +55,11 @@ describe("AgentSession model and extension characterization", () => {
 		const nextModel = harness.getModel("faux-2")!;
 
 		await harness.session.setModel(nextModel);
-		expect(harness.settingsManager.getDefaultProvider()).toBeUndefined();
-		expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
 
 		harness.session.setThinkingLevel("low");
 		expect(harness.settingsManager.getDefaultThinkingLevel()).toBeUndefined();
 
-		await harness.session.setModel(nextModel, { persist: true });
-		expect(harness.settingsManager.getDefaultProvider()).toBe(nextModel.provider);
-		expect(harness.settingsManager.getDefaultModel()).toBe(nextModel.id);
+		await harness.session.setModel(nextModel);
 
 		harness.session.setThinkingLevel("high", { persist: true });
 		expect(harness.settingsManager.getDefaultThinkingLevel()).toBe("high");
@@ -87,17 +81,12 @@ describe("AgentSession model and extension characterization", () => {
 				{ id: "faux-1", name: "One", reasoning: true },
 				{ id: "faux-2", name: "Two", reasoning: true },
 			],
-			settings: {
-				defaultProvider: "faux",
-				defaultModel: "faux-1",
-				defaultThinkingLevel: "low",
-			},
+			settings: { defaultThinkingLevel: "low" },
 		});
 		harnesses.push(harness);
 
 		await harness.session.cycleModel();
 		expect(harness.session.model?.id).toBe("faux-2");
-		expect(harness.settingsManager.getDefaultModel()).toBe("faux-1");
 
 		harness.session.setThinkingLevel("off");
 		expect(harness.session.cycleThinkingLevel()).toBe("minimal");

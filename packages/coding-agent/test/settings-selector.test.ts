@@ -31,8 +31,7 @@ describe("SettingsSelectorComponent", () => {
 			fullscreenScrollbar: "auto",
 			fullscreenCopyOnSelect: true,
 			warnings: {},
-			defaultModel: "not set",
-			availableDefaultModels: [],
+			availableModels: [],
 			availableThinkingLevels: [],
 			modelThinkingLevels: {},
 			availableThemes: [],
@@ -59,8 +58,7 @@ describe("SettingsSelectorComponent", () => {
 
 	it("keeps the configured fixed theme marked while browsing", () => {
 		const config = {
-			defaultModel: "not set",
-			availableDefaultModels: [],
+			availableModels: [],
 			modelThinkingLevels: {},
 			currentTheme: "dark",
 			terminalTheme: "dark",
@@ -84,8 +82,7 @@ describe("SettingsSelectorComponent", () => {
 
 	it("keeps a configured automatic theme marked while browsing", () => {
 		const config = {
-			defaultModel: "not set",
-			availableDefaultModels: [],
+			availableModels: [],
 			modelThinkingLevels: {},
 			currentTheme: "light/dark",
 			terminalTheme: "dark",
@@ -114,8 +111,7 @@ describe("SettingsSelectorComponent", () => {
 		const model = harness.getModel("thinking-model")!;
 		const modelKey = `${model.provider}/${model.id}`;
 		const config = {
-			defaultModel: modelKey,
-			availableDefaultModels: [model],
+			availableModels: [model],
 			thinkingLevel: "high",
 			modelThinkingLevels: { [modelKey]: "medium" },
 		} as unknown as SettingsConfig;

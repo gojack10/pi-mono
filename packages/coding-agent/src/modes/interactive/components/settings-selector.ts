@@ -48,9 +48,8 @@ const DEFAULT_PROJECT_TRUST_BY_LABEL = new Map(
 
 export interface SettingsConfig {
 	autoCompact: boolean;
-	defaultModel: string;
 	currentModel?: Model<any>;
-	availableDefaultModels: readonly Model<any>[];
+	availableModels: readonly Model<any>[];
 	showImages: boolean;
 	imageWidthCells: number;
 	autoResizeImages: boolean;
@@ -451,10 +450,7 @@ export class SettingsSelectorComponent extends Container {
 		const cycleThinkingKey = keyDisplayText("app.thinking.cycle");
 		let currentWarnings = { ...config.warnings };
 		const currentModelThinkingLevels = { ...config.modelThinkingLevels };
-		const defaultModelByValue = new Map(
-			config.availableDefaultModels.map((model) => [modelSettingKey(model), model]),
-		);
-		const currentDefaultModelKey = defaultModelByValue.has(config.defaultModel) ? config.defaultModel : undefined;
+		const modelByValue = new Map(config.availableModels.map((model) => [modelSettingKey(model), model]));
 		const currentModelKey = config.currentModel ? modelSettingKey(config.currentModel) : undefined;
 
 		const items: SettingItem[] = [
@@ -585,13 +581,11 @@ export class SettingsSelectorComponent extends Container {
 							title: "Per-Model Thinking Level",
 							description: "Select a model to configure",
 							options: () => {
-								const sorted = [...config.availableDefaultModels].sort((a, b) => {
+								const sorted = [...config.availableModels].sort((a, b) => {
 									const aKey = modelSettingKey(a);
 									const bKey = modelSettingKey(b);
 									if (aKey === currentModelKey) return -1;
 									if (bKey === currentModelKey) return 1;
-									if (aKey === currentDefaultModelKey) return -1;
-									if (bKey === currentDefaultModelKey) return 1;
 									return a.provider.localeCompare(b.provider);
 								});
 								const items: SelectItem[] = sorted.map((model) => {
@@ -612,19 +606,19 @@ export class SettingsSelectorComponent extends Container {
 								}
 								return items;
 							},
-							preselect: () => currentModelKey ?? currentDefaultModelKey,
+							preselect: () => currentModelKey,
 							searchable: true,
 							layout: MODEL_PICKER_LAYOUT,
 						},
 						{
 							key: "level",
 							title: (ctx) => {
-								const m = defaultModelByValue.get(ctx.model);
+								const m = modelByValue.get(ctx.model);
 								return `Thinking Level for ${m ? modelDisplayLabel(m) : ctx.model}`;
 							},
 							description: "Select default thinking level for this model",
 							options: (ctx) => {
-								const model = defaultModelByValue.get(ctx.model);
+								const model = modelByValue.get(ctx.model);
 								if (!model) return [];
 								const levels = (
 									model.reasoning ? getSupportedThinkingLevels(model) : ["off"]
@@ -653,7 +647,7 @@ export class SettingsSelectorComponent extends Container {
 					return new SteppedSubmenu(
 						steps,
 						(selections) => {
-							const model = defaultModelByValue.get(selections.model);
+							const model = modelByValue.get(selections.model);
 							if (!model) return;
 							if (selections.level === CLEAR_OVERRIDE_VALUE) {
 								callbacks.onModelThinkingLevelRemove(model.provider, model.id);

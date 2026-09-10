@@ -18,9 +18,9 @@ Each scope can also be split into tracked shared settings and ignored local over
 
 Within a scope, pi merges `settings.shared.json`, then legacy `settings.json`, then `settings.local.json`; later files override earlier files, and nested objects are merged. Project settings still override global settings after each scope is merged.
 
-When split settings are active for a scope, pi writes volatile model-selection fields (`lastChangelogVersion`, `defaultProvider`, `defaultModel`, `defaultThinkingLevel`, and `enabledModels`) to `settings.local.json`. Other settings are written to `settings.shared.json`. If neither split file exists, pi keeps the legacy behavior and writes to `settings.json`.
+When split settings are active for a scope, pi writes volatile fields (`lastChangelogVersion`, `defaultThinkingLevel`, and `enabledModels`) to `settings.local.json`. Other settings are written to `settings.shared.json`. If neither split file exists, pi keeps the legacy behavior and writes to `settings.json`.
 
-Edit directly or use `/settings` for common options. To save startup model defaults interactively, use `/model` and press Ctrl+S on the desired model. To save the startup thinking level, use `/thinking` and press Ctrl+S.
+Model startup selection is owned by the model-recency extension: the most recent available model is selected. If the recency cache has no usable model, choose one from `/model`. Use `/thinking` and press Ctrl+S to save the startup thinking level.
 
 ## Project Trust
 
@@ -40,8 +40,6 @@ Use `/trust` in interactive mode to save a project trust decision for future ses
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `defaultProvider` | string | - | Startup provider (e.g., `"anthropic"`, `"openai"`; saved with Ctrl+S in `/model`, or edited manually) |
-| `defaultModel` | string | - | Startup model ID (saved with Ctrl+S in `/model`, or edited manually) |
 | `defaultThinkingLevel` | string | - | Startup thinking level (saved with Ctrl+S in `/thinking`, or edited manually): `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` |
 | `modelThinkingLevels` | object | - | Per-model startup thinking levels keyed by `"provider/modelId"`; configure from `/settings` → Default thinking level per model or edit manually |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
@@ -334,8 +332,6 @@ See [packages.md](packages.md) for package management details.
 
 ```json
 {
-  "defaultProvider": "anthropic",
-  "defaultModel": "claude-sonnet-4-20250514",
   "defaultThinkingLevel": "medium",
   "modelThinkingLevels": {
     "anthropic/claude-sonnet-4-20250514": "high"

@@ -1,25 +1,12 @@
-import { mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Agent } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import { getModel, streamSimple } from "@earendil-works/pi-ai/compat";
-import { getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
-import { afterEach, describe, expect, test, vi } from "vitest";
-import { AgentSession } from "../src/core/agent-session.ts";
-import { AuthStorage } from "../src/core/auth-storage.ts";
+import { describe, expect, test, vi } from "vitest";
 import {
-	defaultModelPerProvider,
 	findInitialModel,
 	parseModelPattern,
 	resolveCliModel,
 	resolveModelScope,
 	resolveModelScopeWithDiagnostics,
 } from "../src/core/model-resolver.ts";
-import { SessionManager } from "../src/core/session-manager.ts";
-import { SettingsManager } from "../src/core/settings-manager.ts";
-import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
-import { createTestResourceLoader } from "./utilities.ts";
 
 // Mock models for testing
 const mockModels: Model<"anthropic-messages">[] = [
@@ -705,212 +692,26 @@ describe("resolveCliModel", () => {
 	});
 });
 
-describe("default model selection", () => {
-	test("openai defaults track current models", () => {
-		expect(defaultModelPerProvider.openai).toBe("gpt-5.5");
-		expect(defaultModelPerProvider["openai-codex"]).toBe("gpt-5.5");
+test("findInitialModel accepts explicit provider custom model ids", async () => {
+	const registry = {
+		getModels: () => allModels,
+	} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
+
+	const result = await findInitialModel({
+		cliProvider: "openrouter",
+		cliModel: "openrouter/openai/ghost-model",
+		modelRuntime: registry,
 	});
 
-	test("zai, minimax, cerebras, and ant-ling defaults track current models", () => {
-		expect(defaultModelPerProvider.zai).toBe("glm-5.3");
-		expect(defaultModelPerProvider["zai-coding-cn"]).toBe("glm-5.3");
-		expect(defaultModelPerProvider.minimax).toBe("MiniMax-M2.7");
-		expect(defaultModelPerProvider["minimax-cn"]).toBe("MiniMax-M2.7");
-		expect(defaultModelPerProvider.cerebras).toBe("gpt-oss-120b");
-		expect(defaultModelPerProvider["ant-ling"]).toBe("Ring-2.6-1T");
-	});
+	expect(result.model?.provider).toBe("openrouter");
+	expect(result.model?.id).toBe("openai/ghost-model");
+});
 
-	test("built-in defaults exist in generated provider catalogs", () => {
-		for (const provider of getBuiltinProviders()) {
-			const defaultId = defaultModelPerProvider[provider];
-			expect(
-				getBuiltinModels(provider).some((model) => model.id === defaultId),
-				`${provider} default ${defaultId} should exist in its generated catalog`,
-			).toBe(true);
-		}
-	});
+test("does not choose an implicit model", async () => {
+	const registry = {
+		getModels: () => allModels,
+	} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
 
-	test("ai-gateway default tracks current model", () => {
-		expect(defaultModelPerProvider["vercel-ai-gateway"]).toBe("zai/glm-5.1");
-	});
-
-	test("xai default tracks current model", () => {
-		expect(defaultModelPerProvider.xai).toBe("grok-4.6");
-	});
-
-	test("qwen token plan individual default tracks current model", () => {
-		expect(defaultModelPerProvider["qwen-token-plan-individual"]).toBe("qwen3.8-max");
-	});
-
-	test("findInitialModel accepts explicit provider custom model ids", async () => {
-		const registry = {
-			getModels: () => allModels,
-		} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
-
-		const result = await findInitialModel({
-			cliProvider: "openrouter",
-			cliModel: "openrouter/openai/ghost-model",
-			scopedModels: [],
-			isContinuing: false,
-			modelRuntime: registry,
-		});
-
-		expect(result.model?.provider).toBe("openrouter");
-		expect(result.model?.id).toBe("openai/ghost-model");
-	});
-
-	test("findInitialModel selects ai-gateway default when available", async () => {
-		const aiGatewayModel: Model<"anthropic-messages"> = {
-			id: "anthropic/claude-opus-4-6",
-			name: "Claude Opus 4.6",
-			api: "anthropic-messages",
-			provider: "vercel-ai-gateway",
-			baseUrl: "https://ai-gateway.vercel.sh",
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 5, output: 15, cacheRead: 0.5, cacheWrite: 5 },
-			contextWindow: 200000,
-			maxTokens: 8192,
-		};
-
-		const registry = {
-			getAvailableSnapshot: () => [aiGatewayModel],
-		} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
-
-		const result = await findInitialModel({
-			scopedModels: [],
-			isContinuing: false,
-			modelRuntime: registry,
-		});
-
-		expect(result.model?.provider).toBe("vercel-ai-gateway");
-		expect(result.model?.id).toBe("anthropic/claude-opus-4-6");
-	});
-
-	test("findInitialModel ignores an unauthenticated saved default", async () => {
-		const savedDeepSeekModel: Model<"anthropic-messages"> = {
-			id: "deepseek-v4-flash",
-			name: "DeepSeek V4 Flash",
-			api: "anthropic-messages",
-			provider: "deepseek",
-			baseUrl: "https://api.deepseek.com",
-			reasoning: true,
-			input: ["text"],
-			cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 },
-			contextWindow: 128000,
-			maxTokens: 8192,
-		};
-		const localDeepSeekModel: Model<"anthropic-messages"> = {
-			...savedDeepSeekModel,
-			provider: "spark-two",
-			baseUrl: "http://spark-two:8000/v1",
-		};
-		const registry = {
-			getModel: (provider: string, modelId: string) =>
-				provider === savedDeepSeekModel.provider && modelId === savedDeepSeekModel.id
-					? savedDeepSeekModel
-					: undefined,
-			hasConfiguredAuth: (provider: string) => provider === "spark-two",
-			getAvailableSnapshot: () => [localDeepSeekModel],
-		} as unknown as Parameters<typeof findInitialModel>[0]["modelRuntime"];
-
-		const result = await findInitialModel({
-			scopedModels: [],
-			isContinuing: false,
-			defaultProvider: "deepseek",
-			defaultModelId: "deepseek-v4-flash",
-			modelRuntime: registry,
-		});
-
-		expect(result.model?.provider).toBe("spark-two");
-		expect(result.model?.id).toBe("deepseek-v4-flash");
-	});
-
-	describe("persisted default model scoping", () => {
-		const tempDirs: string[] = [];
-		const sonnet = getModel("anthropic", "claude-sonnet-4-5")!;
-		const opus = getModel("anthropic", "claude-opus-4-8")!;
-
-		afterEach(() => {
-			for (const dir of tempDirs.splice(0)) {
-				rmSync(dir, { recursive: true, force: true });
-			}
-		});
-
-		async function createSession(options: { scoped: boolean; persistedScope?: string[] }) {
-			const tempDir = join(tmpdir(), `pi-default-scope-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-			mkdirSync(tempDir, { recursive: true });
-			tempDirs.push(tempDir);
-
-			const settingsManager = SettingsManager.create(tempDir, tempDir);
-			if (options.persistedScope) {
-				settingsManager.setEnabledModels(options.persistedScope);
-			}
-
-			const authStorage = AuthStorage.inMemory({ anthropic: { type: "api_key", key: "test-key" } });
-			const modelRuntime = getModelRuntime(await createModelRegistry(authStorage, join(tempDir, "models.json")));
-			const agent = new Agent({
-				initialState: {
-					model: sonnet,
-					systemPrompt: "test",
-					tools: [],
-				},
-				streamFn: streamSimple,
-			});
-			const session = new AgentSession({
-				agent,
-				sessionManager: SessionManager.inMemory(tempDir),
-				settingsManager,
-				cwd: tempDir,
-				modelRuntime,
-				resourceLoader: createTestResourceLoader(),
-				scopedModels: options.scoped ? [{ model: sonnet }] : [],
-			});
-
-			return { session, settingsManager };
-		}
-
-		test("adds a persisted default to an existing scoped model list", async () => {
-			const { session, settingsManager } = await createSession({
-				scoped: true,
-				persistedScope: [`${sonnet.provider}/${sonnet.id}`],
-			});
-
-			await session.setModel(opus, { persist: true });
-
-			expect(settingsManager.getDefaultProvider()).toBe(opus.provider);
-			expect(settingsManager.getDefaultModel()).toBe(opus.id);
-			expect(session.scopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`)).toEqual([
-				`${sonnet.provider}/${sonnet.id}`,
-				`${opus.provider}/${opus.id}`,
-			]);
-			expect(settingsManager.getEnabledModels()).toEqual([
-				`${sonnet.provider}/${sonnet.id}`,
-				`${opus.provider}/${opus.id}`,
-			]);
-		});
-
-		test("does not create a scoped model list when all models are available", async () => {
-			const { session, settingsManager } = await createSession({ scoped: false });
-
-			await session.setModel(opus, { persist: true });
-
-			expect(session.scopedModels).toEqual([]);
-			expect(settingsManager.getEnabledModels()).toBeUndefined();
-		});
-
-		test("keeps session-only model changes out of scope", async () => {
-			const { session, settingsManager } = await createSession({
-				scoped: true,
-				persistedScope: [`${sonnet.provider}/${sonnet.id}`],
-			});
-
-			await session.setModel(opus, { persist: false });
-
-			expect(session.scopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`)).toEqual([
-				`${sonnet.provider}/${sonnet.id}`,
-			]);
-			expect(settingsManager.getEnabledModels()).toEqual([`${sonnet.provider}/${sonnet.id}`]);
-		});
-	});
+	const result = await findInitialModel({ modelRuntime: registry });
+	expect(result.model).toBeUndefined();
 });

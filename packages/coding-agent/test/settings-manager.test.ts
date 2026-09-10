@@ -33,7 +33,6 @@ describe("SettingsManager", () => {
 				settingsPath,
 				JSON.stringify({
 					theme: "dark",
-					defaultModel: "claude-sonnet",
 				}),
 			);
 
@@ -54,17 +53,11 @@ describe("SettingsManager", () => {
 			expect(savedSettings.enabledModels).toEqual(["claude-opus-4-5", "gpt-5.2-codex"]);
 			expect(savedSettings.defaultThinkingLevel).toBe("high");
 			expect(savedSettings.theme).toBe("dark");
-			expect(savedSettings.defaultModel).toBe("claude-sonnet");
 		});
 
 		it("should preserve custom settings when changing theme", async () => {
 			const settingsPath = join(agentDir, "settings.json");
-			writeFileSync(
-				settingsPath,
-				JSON.stringify({
-					defaultModel: "claude-sonnet",
-				}),
-			);
+			writeFileSync(settingsPath, JSON.stringify({}));
 
 			const manager = SettingsManager.create(projectDir, agentDir);
 
@@ -118,7 +111,6 @@ describe("SettingsManager", () => {
 				JSON.stringify({
 					theme: "dark",
 					compaction: { enabled: true, reserveTokens: 1000 },
-					defaultProvider: "shared-provider",
 				}),
 			);
 			writeFileSync(
@@ -131,8 +123,6 @@ describe("SettingsManager", () => {
 			writeFileSync(
 				join(agentDir, "settings.local.json"),
 				JSON.stringify({
-					defaultProvider: "local-provider",
-					defaultModel: "local-model",
 					compaction: { reserveTokens: 2000 },
 				}),
 			);
@@ -140,8 +130,6 @@ describe("SettingsManager", () => {
 			const manager = SettingsManager.create(projectDir, agentDir);
 
 			expect(manager.getTheme()).toBe("legacy-theme");
-			expect(manager.getDefaultProvider()).toBe("local-provider");
-			expect(manager.getDefaultModel()).toBe("local-model");
 			expect(manager.getCompactionSettings()).toEqual({
 				enabled: true,
 				reserveTokens: 2000,
@@ -149,7 +137,7 @@ describe("SettingsManager", () => {
 			});
 		});
 
-		it("should write volatile model defaults to local settings when split is active", async () => {
+		it("should write volatile thinking settings to local settings when split is active", async () => {
 			const sharedPath = join(agentDir, "settings.shared.json");
 			const localPath = join(agentDir, "settings.local.json");
 			writeFileSync(
@@ -159,21 +147,16 @@ describe("SettingsManager", () => {
 					packages: ["git:github.com/example/pi-tools"],
 				}),
 			);
-			writeFileSync(localPath, JSON.stringify({ defaultProvider: "deepseek" }));
+			writeFileSync(localPath, JSON.stringify({}));
 
 			const manager = SettingsManager.create(projectDir, agentDir);
-			manager.setDefaultModelAndProvider("openai-codex-bto", "gpt-5.5");
 			manager.setDefaultThinkingLevel("xhigh");
 			await manager.flush();
 
 			const sharedSettings = JSON.parse(readFileSync(sharedPath, "utf-8"));
 			const localSettings = JSON.parse(readFileSync(localPath, "utf-8"));
-			expect(sharedSettings.defaultProvider).toBeUndefined();
-			expect(sharedSettings.defaultModel).toBeUndefined();
 			expect(sharedSettings.defaultThinkingLevel).toBeUndefined();
 			expect(sharedSettings.packages).toEqual(["git:github.com/example/pi-tools"]);
-			expect(localSettings.defaultProvider).toBe("openai-codex-bto");
-			expect(localSettings.defaultModel).toBe("gpt-5.5");
 			expect(localSettings.defaultThinkingLevel).toBe("xhigh");
 		});
 
@@ -181,7 +164,7 @@ describe("SettingsManager", () => {
 			const sharedPath = join(agentDir, "settings.shared.json");
 			const localPath = join(agentDir, "settings.local.json");
 			writeFileSync(sharedPath, JSON.stringify({ theme: "dark" }));
-			writeFileSync(localPath, JSON.stringify({ defaultModel: "local-model" }));
+			writeFileSync(localPath, JSON.stringify({}));
 
 			const manager = SettingsManager.create(projectDir, agentDir);
 			manager.setTheme("light");
@@ -190,7 +173,6 @@ describe("SettingsManager", () => {
 			const sharedSettings = JSON.parse(readFileSync(sharedPath, "utf-8"));
 			const localSettings = JSON.parse(readFileSync(localPath, "utf-8"));
 			expect(sharedSettings.theme).toBe("light");
-			expect(localSettings.defaultModel).toBe("local-model");
 			expect(localSettings.theme).toBeUndefined();
 		});
 	});
@@ -258,7 +240,6 @@ describe("SettingsManager", () => {
 				JSON.stringify({
 					theme: "light",
 					extensions: ["/after.ts"],
-					defaultModel: "claude-sonnet",
 				}),
 			);
 
@@ -266,7 +247,6 @@ describe("SettingsManager", () => {
 
 			expect(manager.getTheme()).toBe("light");
 			expect(manager.getExtensionPaths()).toEqual(["/after.ts"]);
-			expect(manager.getDefaultModel()).toBe("claude-sonnet");
 		});
 
 		it("should keep previous settings and report the file path when the file is invalid", async () => {

@@ -88,7 +88,6 @@ export function createModelsService(
 			const selected = modelRuntime?.getModel(model.provider, model.modelId);
 			if (selected === undefined) throw new Error(`Unknown model: ${model.provider}/${model.modelId}`);
 			await lane.setModel({ provider: selected.provider, modelId: selected.id }, context);
-			settingsManager?.setDefaultModelAndProvider(selected.provider, selected.id);
 			await settingsManager?.flush();
 			state.state.configuration = await readConfiguration(context);
 			state.publish(context);
