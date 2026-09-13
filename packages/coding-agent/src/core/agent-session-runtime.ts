@@ -1,11 +1,13 @@
 import { constants, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, parse, resolve } from "node:path";
 import { resolvePath } from "../utils/paths.ts";
-import type { AgentSession } from "./agent-session.ts";
+import type { AgentSession, AgentSessionMaintenanceQueue } from "./agent-session.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
 import type {
 	ProjectTrustContext,
 	ReplacedSessionContext,
+	SessionMaintenanceOptions,
+	SessionMaintenanceToken,
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "./extensions/index.ts";
@@ -79,6 +81,10 @@ export class AgentSessionRuntime {
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
 	private _diagnostics: AgentSessionRuntimeDiagnostic[];
 	private _modelFallbackMessage?: string;
+	private maintenanceOperation?: {
+		token: SessionMaintenanceToken;
+		promise: Promise<{ cancelled: boolean }>;
+	};
 
 	constructor(
 		_session: AgentSession,
@@ -112,6 +118,18 @@ export class AgentSessionRuntime {
 
 	get modelFallbackMessage(): string | undefined {
 		return this._modelFallbackMessage;
+	}
+
+	private assertMaintenanceAvailable(): void {
+		// The partial transfer retains old admission callbacks and lacks verified
+		// bind rollback. Reject before abort/rewrite; never use lifecycle teardown.
+		throw new Error(
+			"Maintenance cleanup is unavailable: live ownership transfer is not yet verified. No interruption or cleanup was performed.",
+		);
+	}
+
+	private assertNoMaintenanceTransition(): void {
+		if (this.maintenanceOperation) throw new Error("session maintenance is in progress");
 	}
 
 	setRebindSession(rebindSession?: (session: AgentSession) => Promise<void>): void {
@@ -164,7 +182,16 @@ export class AgentSessionRuntime {
 		return { cancelled: result?.cancel === true };
 	}
 
-	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
+	private async teardownCurrent(
+		reason: SessionShutdownEvent["reason"],
+		targetSessionFile?: string,
+		maintenance?: SessionMaintenanceToken,
+	): Promise<AgentSessionMaintenanceQueue | undefined> {
+		// Record the intent before aborting. An aborted assistant message alone is
+		// not enough to distinguish a human cancellation from a lifecycle handoff.
+		if (maintenance) this.session.requestMaintenance(maintenance);
+		else this.session.requestLifecycle(`session ${reason}`);
+		const queued = maintenance ? this.session.captureMaintenanceQueue() : undefined;
 		// Settle any active response first so the aborted turn (including tool
 		// results) is persisted to the outgoing session before it is replaced.
 		await this.session.abort();
@@ -172,9 +199,11 @@ export class AgentSessionRuntime {
 			type: "session_shutdown",
 			reason,
 			targetSessionFile,
+			...(maintenance ? { maintenance } : {}),
 		});
 		this.beforeSessionInvalidate?.();
-		this.session.dispose();
+		this.session.dispose(maintenance ? { maintenance } : undefined);
+		return queued;
 	}
 
 	private apply(result: CreateAgentSessionRuntimeResult): void {
@@ -193,14 +222,129 @@ export class AgentSessionRuntime {
 		}
 	}
 
+	private async runMaintenance(
+		sessionPath: string,
+		options: {
+			maintenance: SessionMaintenanceOptions;
+			cwdOverride?: string;
+			withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+			projectTrustContextFactory?: (cwd: string) => ProjectTrustContext;
+		},
+	): Promise<{ cancelled: boolean }> {
+		const token = options.maintenance.token;
+		const currentFile = this.session.sessionFile;
+		if (!currentFile || resolve(currentFile) !== resolve(sessionPath)) {
+			throw new Error("maintenance must target the current session file");
+		}
+		if (
+			token.sessionId !== this.session.sessionId ||
+			(token.sessionFile !== undefined && resolve(token.sessionFile) !== resolve(currentFile)) ||
+			(token.branchAnchor !== undefined && token.branchAnchor !== this.session.sessionManager.getLeafId())
+		) {
+			throw new Error("maintenance token does not match the current session");
+		}
+
+		this.session.requestMaintenance(token);
+		const queued = this.session.captureMaintenanceQueue();
+		await this.session.abort();
+		const assertNotCancelled = () => {
+			if (this.session.interruption?.kind === "cancel")
+				throw new Error("maintenance was superseded by cancellation");
+		};
+		assertNotCancelled();
+		const prepared = await options.maintenance.beforeReplace?.();
+		assertNotCancelled();
+		if (token.branchAnchor !== undefined && token.branchAnchor !== this.session.sessionManager.getLeafId()) {
+			throw new Error("session branch changed during maintenance cleanup");
+		}
+		if (prepared && prepared.replace === false) {
+			return { cancelled: false };
+		}
+
+		// Do not open the replacement until cleanup has finished. Opening first
+		// lets old callbacks write into the replacement's in-memory cache.
+		const sessionManager = SessionManager.open(sessionPath, undefined, options.cwdOverride);
+		assertSessionCwdExists(sessionManager, this.cwd);
+		const previousSessionFile = this.session.sessionFile;
+		await emitSessionShutdownEvent(this.session.extensionRunner, {
+			type: "session_shutdown",
+			reason: "maintenance",
+			targetSessionFile: sessionManager.getSessionFile(),
+			maintenance: token,
+		});
+		this.beforeSessionInvalidate?.();
+		this.session.dispose({ maintenance: token });
+		this.apply(
+			await this.createRuntime({
+				cwd: sessionManager.getCwd(),
+				agentDir: this.services.agentDir,
+				sessionManager,
+				sessionStartEvent: {
+					type: "session_start",
+					reason: "maintenance",
+					previousSessionFile,
+					maintenance: token,
+				},
+				projectTrustContext: options.projectTrustContextFactory?.(sessionManager.getCwd()),
+			}),
+		);
+		this.session.restoreMaintenanceQueue(queued);
+		await this.finishSessionReplacement(options.withSession);
+		return { cancelled: false };
+	}
+
+	private startMaintenance(
+		sessionPath: string,
+		options: {
+			maintenance: SessionMaintenanceOptions;
+			cwdOverride?: string;
+			withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+			projectTrustContextFactory?: (cwd: string) => ProjectTrustContext;
+		},
+	): Promise<{ cancelled: boolean }> {
+		const existing = this.maintenanceOperation;
+		if (existing) {
+			if (existing.token.maintenanceId !== options.maintenance.token.maintenanceId) {
+				return Promise.reject(new Error("another maintenance operation is already in progress"));
+			}
+			return existing.promise;
+		}
+		const maintenance = options.maintenance;
+		if (!maintenance) return Promise.reject(new Error("maintenance options are required"));
+		const promise = this.runMaintenance(sessionPath, {
+			maintenance,
+			cwdOverride: options.cwdOverride,
+			withSession: options.withSession,
+			projectTrustContextFactory: options.projectTrustContextFactory,
+		});
+		this.maintenanceOperation = { token: maintenance.token, promise };
+		void promise
+			.finally(() => {
+				if (this.maintenanceOperation?.promise === promise) this.maintenanceOperation = undefined;
+			})
+			.catch(() => {});
+		return promise;
+	}
+
 	async switchSession(
 		sessionPath: string,
 		options?: {
 			cwdOverride?: string;
 			withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 			projectTrustContextFactory?: (cwd: string) => ProjectTrustContext;
+			maintenance?: SessionMaintenanceOptions;
 		},
 	): Promise<{ cancelled: boolean }> {
+		if (options?.maintenance) {
+			this.assertMaintenanceAvailable();
+			return this.startMaintenance(sessionPath, {
+				maintenance: options.maintenance,
+				cwdOverride: options.cwdOverride,
+				withSession: options.withSession,
+				projectTrustContextFactory: options.projectTrustContextFactory,
+			});
+		}
+		this.assertNoMaintenanceTransition();
 		const beforeResult = await this.emitBeforeSwitch("resume", sessionPath);
 		if (beforeResult.cancelled) {
 			return beforeResult;
@@ -228,6 +372,7 @@ export class AgentSessionRuntime {
 		setup?: (sessionManager: SessionManager) => Promise<void>;
 		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 	}): Promise<{ cancelled: boolean }> {
+		this.assertNoMaintenanceTransition();
 		const beforeResult = await this.emitBeforeSwitch("new");
 		if (beforeResult.cancelled) {
 			return beforeResult;
@@ -263,6 +408,7 @@ export class AgentSessionRuntime {
 		entryId: string,
 		options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
 	): Promise<{ cancelled: boolean; selectedText?: string }> {
+		this.assertNoMaintenanceTransition();
 		const position = options?.position ?? "before";
 		const beforeResult = await this.emitBeforeFork(entryId, { position });
 		if (beforeResult.cancelled) {
@@ -376,6 +522,7 @@ export class AgentSessionRuntime {
 				destinationPath = join(sessionDir, `${name}-${suffix++}${ext}`);
 			}
 		}
+		this.assertNoMaintenanceTransition();
 		const beforeResult = await this.emitBeforeSwitch("resume", destinationPath);
 		if (beforeResult.cancelled) {
 			return beforeResult;
@@ -402,6 +549,7 @@ export class AgentSessionRuntime {
 	}
 
 	async dispose(): Promise<void> {
+		this.session.requestLifecycle("session quit");
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
 			reason: "quit",

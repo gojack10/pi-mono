@@ -377,14 +377,14 @@ function createExtensionAPI(
 		},
 
 		// Action methods - delegate to shared runtime
-		sendMessage(message, options): void {
+		sendMessage(message, options) {
 			assertActive();
-			runtime.sendMessage(message, options);
+			return runtime.sendMessage(message, options);
 		},
 
-		sendUserMessage(content, options): void {
+		sendUserMessage(content, options) {
 			assertActive();
-			runtime.sendUserMessage(content, options);
+			return runtime.sendUserMessage(content, options);
 		},
 
 		appendEntry(customType: string, data?: unknown): void {

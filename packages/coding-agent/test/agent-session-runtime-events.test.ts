@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
@@ -111,6 +111,44 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 
 		return { runtimeHost, faux };
 	}
+
+	it("rejects unqualified maintenance before interruption, cleanup, or owner replacement", async () => {
+		const { runtimeHost } = await createRuntimeHost(() => {});
+		await runtimeHost.session.prompt("saved session");
+		const session = runtimeHost.session;
+		const entries = session.sessionManager.getEntries();
+		const abort = vi.spyOn(session, "abort");
+		const request = vi.spyOn(session, "requestMaintenance");
+		const beforeReplace = vi.fn();
+		const withSession = vi.fn();
+		for (const streaming of [false, true, true]) {
+			const status = vi.spyOn(session, "isStreaming", "get").mockReturnValue(streaming);
+			await expect(
+				runtimeHost.switchSession(session.sessionFile!, {
+					maintenance: {
+						token: {
+							maintenanceId: "same-request",
+							ownerEpoch: "same-owner",
+							sessionId: session.sessionId,
+							sessionFile: session.sessionFile,
+							branchAnchor: session.sessionManager.getLeafId(),
+						},
+						beforeReplace,
+					},
+					withSession,
+				}),
+			).rejects.toThrow("ownership transfer is not yet verified");
+			status.mockRestore();
+		}
+		expect(abort).not.toHaveBeenCalled();
+		expect(request).not.toHaveBeenCalled();
+		expect(beforeReplace).not.toHaveBeenCalled();
+		expect(withSession).not.toHaveBeenCalled();
+		expect(runtimeHost.session).toBe(session);
+		expect(session.sessionManager.getEntries()).toEqual(entries);
+		abort.mockRestore();
+		request.mockRestore();
+	});
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {
 		const events: RecordedSessionEvent[] = [];

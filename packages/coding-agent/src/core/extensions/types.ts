@@ -429,7 +429,10 @@ export interface ExtensionCommandContext extends ExtensionContext {
 	/** Switch to a different session file. */
 	switchSession(
 		sessionPath: string,
-		options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
+		options?: {
+			withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+			maintenance?: SessionMaintenanceOptions;
+		},
 	): Promise<{ cancelled: boolean }>;
 
 	/** Reload extensions, skills, prompts, themes, and context files. */
@@ -441,16 +444,41 @@ export interface ExtensionCommandContext extends ExtensionContext {
  *
  * This is passed to `withSession()` callbacks on `newSession()`, `fork()`, and `switchSession()`.
  */
+export type MessageAdmissionDelivery = "turn" | "steer" | "followUp" | "custom" | "nextTurn";
+
+export type MessageAdmissionResult =
+	| {
+			status: "admitted";
+			delivery: MessageAdmissionDelivery;
+			admissionKey?: string;
+	  }
+	| {
+			status: "rejected";
+			reason: "preflight" | "session_replaced" | "integrity" | "finality";
+			error: string;
+			admissionKey?: string;
+	  };
+
 export interface ReplacedSessionContext extends ExtensionCommandContext {
 	sendMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
-	): Promise<void>;
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+			admissionKey?: string;
+			admissionGuard?: () => boolean;
+		},
+	): Promise<MessageAdmissionResult>;
 
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
-	): Promise<void>;
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
+			admissionKey?: string;
+			admissionGuard?: () => boolean;
+		},
+	): Promise<MessageAdmissionResult>;
 }
 
 // ============================================================================
@@ -720,12 +748,38 @@ export interface McpServersChangeEvent {
 // ============================================================================
 
 /** Fired when a session is started, loaded, or reloaded */
+export interface SessionMaintenanceToken {
+	/** Stable id for one same-session maintenance transaction. */
+	maintenanceId: string;
+	/** Monotonic/logical owner epoch fencing the old runtime from the replacement. */
+	ownerEpoch: string;
+	/** Session identity that must survive the handoff. */
+	sessionId: string;
+	sessionFile?: string;
+	branchAnchor?: string | null;
+	jobId?: string;
+	attemptId?: string;
+}
+
+export interface MaintenancePrepareResult {
+	/** Return false to finish a no-change maintenance operation without replacement. */
+	replace?: boolean;
+}
+
+export interface SessionMaintenanceOptions {
+	token: SessionMaintenanceToken;
+	/** Runs after the old run is idle and before the replacement is opened. */
+	beforeReplace?: () => void | MaintenancePrepareResult | Promise<void | MaintenancePrepareResult>;
+}
+
 export interface SessionStartEvent {
 	type: "session_start";
 	/** Why this session start happened. */
-	reason: "startup" | "reload" | "new" | "resume" | "fork";
+	reason: "startup" | "reload" | "new" | "resume" | "fork" | "maintenance";
 	/** Previously active session file. Present for "new", "resume", and "fork". */
 	previousSessionFile?: string;
+	/** Present only when a same-session maintenance lease is being adopted. */
+	maintenance?: SessionMaintenanceToken;
 }
 
 /** Fired when the current session metadata changes. */
@@ -791,9 +845,11 @@ export interface SessionCompactFailedEvent {
 /** Fired before an extension runtime is torn down due to quit, reload, or session replacement. */
 export interface SessionShutdownEvent {
 	type: "session_shutdown";
-	reason: "quit" | "reload" | "new" | "resume" | "fork";
+	reason: "quit" | "reload" | "new" | "resume" | "fork" | "maintenance";
 	/** Destination session file when shutting down due to session replacement. */
 	targetSessionFile?: string;
+	/** Present only for a non-destructive same-session maintenance handoff. */
+	maintenance?: SessionMaintenanceToken;
 }
 
 /** Preparation data for tree navigation */
@@ -915,10 +971,22 @@ export interface AgentStartEvent {
 	type: "agent_start";
 }
 
+export type AgentInterruptionKind = "cancel" | "maintenance" | "lifecycle";
+export type AgentInterruptionSource = "escape" | "task_cancel" | "extension" | "maintenance" | "lifecycle";
+
+export interface AgentInterruption {
+	kind: AgentInterruptionKind;
+	source: AgentInterruptionSource;
+	reason: string;
+	runId?: number;
+	operationId?: string;
+}
+
 /** Fired when an agent loop ends */
 export interface AgentEndEvent {
 	type: "agent_end";
 	messages: AgentMessage[];
+	interruption?: AgentInterruption;
 }
 
 export type AgentActivityOutcome = "completed" | "aborted" | "error";
@@ -986,6 +1054,7 @@ export interface AgentBeforeSettleEvent extends BoundaryState {
 /** Fired after an agent run has fully settled and no automatic retry, compaction, or queued continuation will run. */
 export interface AgentSettledEvent {
 	type: "agent_settled";
+	interruption?: AgentInterruption;
 }
 
 export type UIPromptKind = "select" | "confirm" | "input" | "editor" | "custom";
@@ -1676,21 +1745,32 @@ export interface ExtensionAPI {
 	// Actions
 	// =========================================================================
 
-	/** Send a custom message to the session. */
+	/** Send a custom message to the session; the promise resolves at logical admission. */
 	sendMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
-	): void;
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+			admissionKey?: string;
+			admissionGuard?: () => boolean;
+		},
+	): Promise<MessageAdmissionResult>;
 
 	/**
 	 * Send a user message to the agent. Always triggers a turn.
 	 * When the agent is streaming, use deliverAs to specify how to queue the message.
 	 * Set expandPromptTemplates to dispatch extension commands and expand skill commands and prompt templates.
+	 * The returned promise resolves when the message is admitted, not when the model turn finishes.
 	 */
 	sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
-	): void;
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
+			admissionKey?: string;
+			admissionGuard?: () => boolean;
+		},
+	): Promise<MessageAdmissionResult>;
 
 	/** Append a custom entry to the session for state persistence (not sent to LLM). */
 	appendEntry<T = unknown>(customType: string, data?: T): void;
@@ -2057,13 +2137,23 @@ type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 
 export type SendMessageHandler = <T = unknown>(
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-	options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
-) => void;
+	options?: {
+		triggerTurn?: boolean;
+		deliverAs?: "steer" | "followUp" | "nextTurn";
+		admissionKey?: string;
+		admissionGuard?: () => boolean;
+	},
+) => Promise<MessageAdmissionResult>;
 
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],
-	options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
-) => void;
+	options?: {
+		deliverAs?: "steer" | "followUp";
+		expandPromptTemplates?: boolean;
+		admissionKey?: string;
+		admissionGuard?: () => boolean;
+	},
+) => Promise<MessageAdmissionResult>;
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
 
@@ -2208,7 +2298,10 @@ export interface ExtensionCommandContextActions {
 	) => Promise<{ cancelled: boolean }>;
 	switchSession: (
 		sessionPath: string,
-		options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
+		options?: {
+			withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+			maintenance?: SessionMaintenanceOptions;
+		},
 	) => Promise<{ cancelled: boolean }>;
 	reload: () => Promise<void>;
 }

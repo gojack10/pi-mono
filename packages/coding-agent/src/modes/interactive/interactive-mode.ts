@@ -1953,6 +1953,7 @@ export class InteractiveMode {
 			uiContext,
 			mode: "tui",
 			abortHandler: () => {
+				this.session.requestCancellation("extension", "extension requested cancellation");
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			},
 			commandContextActions: {
@@ -2201,6 +2202,7 @@ export class InteractiveMode {
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 			signal: this.session.agent.signal,
 			abort: () => {
+				this.session.requestCancellation("extension", "extension requested cancellation");
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			},
 			hasPendingMessages: () => this.session.pendingMessageCount > 0,
@@ -3674,6 +3676,7 @@ export class InteractiveMode {
 				// Set up escape to abort retry
 				this.retryEscapeHandler = this.defaultEditor.onEscape;
 				this.defaultEditor.onEscape = () => {
+					this.session.requestCancellation("escape", "retry interrupted by Escape");
 					this.session.abortRetry();
 				};
 				this.showStatusIndicator(
@@ -4651,6 +4654,7 @@ export class InteractiveMode {
 	}
 
 	private restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
+		if (options?.abort) this.session.requestCancellation("escape", "execution interrupted by Escape");
 		const { steering, followUp } = this.clearAllQueues();
 		const allQueued = [...steering, ...followUp];
 		if (allQueued.length === 0) {
@@ -5688,6 +5692,7 @@ export class InteractiveMode {
 		try {
 			const result = await this.runtimeHost.switchSession(sessionPath, {
 				withSession: options?.withSession,
+				maintenance: options?.maintenance,
 				projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
 			});
 			if (result.cancelled) {
@@ -5705,6 +5710,7 @@ export class InteractiveMode {
 				const result = await this.runtimeHost.switchSession(sessionPath, {
 					cwdOverride: selectedCwd,
 					withSession: options?.withSession,
+					maintenance: options?.maintenance,
 					projectTrustContextFactory: (cwd) => this.createProjectTrustContext(cwd),
 				});
 				if (result.cancelled) {
@@ -5713,6 +5719,7 @@ export class InteractiveMode {
 				this.showStatus("Resumed session in current cwd");
 				return result;
 			}
+			if (options?.maintenance) throw error;
 			return this.handleFatalRuntimeError("Failed to resume session", error);
 		}
 	}

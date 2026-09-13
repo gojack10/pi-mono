@@ -80,8 +80,8 @@ describe("ExtensionRunner", () => {
 	};
 
 	const extensionActions: ExtensionActions = {
-		sendMessage: () => {},
-		sendUserMessage: () => {},
+		sendMessage: async () => ({ status: "admitted", delivery: "custom" }),
+		sendUserMessage: async () => ({ status: "admitted", delivery: "turn" }),
 		appendEntry: () => {},
 		recordError: () => "error-entry",
 		setSessionName: () => {},

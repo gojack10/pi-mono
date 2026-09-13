@@ -79,6 +79,7 @@ import type {
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeResult,
 	SessionBoundaryDraft,
+	SessionMaintenanceOptions,
 	SessionShutdownEvent,
 	ToolCallEvent,
 	ToolCallEventResult,
@@ -243,7 +244,10 @@ export type NavigateTreeHandler = (
 
 export type SwitchSessionHandler = (
 	sessionPath: string,
-	options?: { withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
+	options?: {
+		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+		maintenance?: SessionMaintenanceOptions;
+	},
 ) => Promise<{ cancelled: boolean }>;
 
 export type ReloadHandler = () => Promise<void>;

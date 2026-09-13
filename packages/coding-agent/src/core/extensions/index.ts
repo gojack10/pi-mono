@@ -26,6 +26,9 @@ export type {
 	AgentBeforeSettleEvent,
 	AgentBeforeSettleEventResult,
 	AgentEndEvent,
+	AgentInterruption,
+	AgentInterruptionKind,
+	AgentInterruptionSource,
 	AgentSettledEvent,
 	AgentStartEvent,
 	// Re-exports
@@ -115,9 +118,12 @@ export type {
 	LoadExtensionsResult,
 	LsToolCallEvent,
 	LsToolResultEvent,
+	MaintenancePrepareResult,
 	MarkdownTransformContext,
 	MarkdownTransformer,
 	McpServersChangeEvent,
+	MessageAdmissionDelivery,
+	MessageAdmissionResult,
 	// Events - Message
 	MessageEndEvent,
 	MessageEndEventResult,
@@ -165,6 +171,8 @@ export type {
 	SessionCompactFailedEvent,
 	SessionEvent,
 	SessionInfoChangedEvent,
+	SessionMaintenanceOptions,
+	SessionMaintenanceToken,
 	SessionShutdownEvent,
 	// Events - Session
 	SessionStartEvent,

@@ -85,6 +85,8 @@ import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
 	type AgentActivityOutcome,
+	type AgentInterruption,
+	type AgentInterruptionSource,
 	type BoundaryContextPreview,
 	type ContextUsage,
 	type ExecuteToolOptions,
@@ -94,6 +96,7 @@ import {
 	ExtensionRunner,
 	type ExtensionUIContext,
 	type InputSource,
+	type MessageAdmissionResult,
 	type MessageEndEvent,
 	type MessageStartEvent,
 	type MessageUpdateEvent,
@@ -102,6 +105,7 @@ import {
 	type SessionBeforeTreeResult,
 	type SessionBoundaryDraft,
 	type SessionCompactFailedEvent,
+	type SessionMaintenanceToken,
 	type SessionStartEvent,
 	type ShutdownHandler,
 	type ToolDefinition,
@@ -196,8 +200,9 @@ export type AgentSessionEvent =
 			type: "agent_end";
 			messages: AgentMessage[];
 			willRetry: boolean;
+			interruption?: AgentInterruption;
 	  }
-	| { type: "agent_settled" }
+	| { type: "agent_settled"; interruption?: AgentInterruption }
 	| {
 			type: "queue_update";
 			steering: readonly string[];
@@ -310,6 +315,209 @@ export interface PromptOptions {
 	source?: InputSource;
 	/** Internal hook used by RPC mode to observe how an accepted prompt was dispatched. Not called if the prompt is rejected. */
 	preflightResult?: (disposition: PromptDisposition) => void;
+	/** Stable logical event id used to deduplicate extension notifications. */
+	admissionKey?: string;
+	/** Optional lifecycle guard checked immediately before admission. */
+	admissionGuard?: () => boolean;
+}
+
+interface AdmissionWork {
+	receipt: MessageAdmissionResult;
+	completion?: Promise<void>;
+}
+
+export interface AgentSessionMaintenanceQueue {
+	steering: readonly string[];
+	followUp: readonly string[];
+	nextTurn: readonly CustomMessage[];
+	custom: readonly CustomMessage[];
+	bash: readonly BashExecutionMessage[];
+}
+
+type AdmissionErrorCode = "session_replaced" | "integrity" | "finality";
+
+class SessionAdmissionError extends Error {
+	readonly code: AdmissionErrorCode;
+
+	constructor(code: AdmissionErrorCode, message: string) {
+		super(message);
+		this.name = "SessionAdmissionError";
+		this.code = code;
+	}
+}
+
+function admissionFingerprint(value: unknown): string {
+	if (value === undefined) return "undefined";
+	if (value === null || typeof value !== "object") return JSON.stringify(value) ?? String(value);
+	if (Array.isArray(value)) return `[${value.map(admissionFingerprint).join(",")}]`;
+	return `{${Object.entries(value)
+		.filter(([, entry]) => entry !== undefined)
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([key, entry]) => `${JSON.stringify(key)}:${admissionFingerprint(entry)}`)
+		.join(",")}}`;
+}
+
+interface AdmissionRecord {
+	fingerprint: string;
+	promise: Promise<MessageAdmissionResult>;
+}
+
+interface AdmissionSlot {
+	token: object;
+	generation: number;
+	release: () => void;
+	reject: (reason: unknown) => void;
+	cancelled: boolean;
+}
+
+class SessionAdmissionQueue {
+	private tail: Promise<void> = Promise.resolve();
+	private generation = 0;
+	private activeToken: object | undefined;
+	private readonly records = new Map<string, AdmissionRecord>();
+	private readonly slots = new Set<AdmissionSlot>();
+	private readonly maintenanceTokens = new Map<string, { token: object; sessionId: string; ownerEpoch: string }>();
+
+	bind(): object {
+		if (this.activeToken) this.cancelToken(this.activeToken);
+		const token = {};
+		this.activeToken = token;
+		this.generation++;
+		return token;
+	}
+
+	park(token: object, maintenanceId: string, sessionId: string, ownerEpoch: string): void {
+		if (this.activeToken !== token) {
+			throw new SessionAdmissionError("session_replaced", "session admission owner is no longer current");
+		}
+		const existing = this.maintenanceTokens.get(maintenanceId);
+		if (
+			existing &&
+			(existing.token !== token || existing.sessionId !== sessionId || existing.ownerEpoch !== ownerEpoch)
+		) {
+			throw new SessionAdmissionError("integrity", "maintenance admission token conflicts with its owner");
+		}
+		this.maintenanceTokens.set(maintenanceId, { token, sessionId, ownerEpoch });
+	}
+
+	adopt(maintenanceId: string, sessionId: string, ownerEpoch: string): object {
+		const handoff = this.maintenanceTokens.get(maintenanceId);
+		if (
+			!handoff ||
+			handoff.sessionId !== sessionId ||
+			handoff.ownerEpoch !== ownerEpoch ||
+			this.activeToken !== handoff.token
+		) {
+			throw new SessionAdmissionError("session_replaced", "maintenance admission handoff is unavailable");
+		}
+		this.maintenanceTokens.delete(maintenanceId);
+		return handoff.token;
+	}
+
+	unbind(token: object): void {
+		if (this.activeToken !== token) return;
+		this.activeToken = undefined;
+		this.generation++;
+		for (const [maintenanceId, handoff] of this.maintenanceTokens) {
+			if (handoff.token === token) this.maintenanceTokens.delete(maintenanceId);
+		}
+		this.cancelToken(token);
+	}
+
+	private cancelToken(token: object): void {
+		const error = new SessionAdmissionError("session_replaced", "session was replaced before message admission");
+		for (const slot of this.slots) {
+			if (slot.token !== token) continue;
+			slot.cancelled = true;
+			slot.reject(error);
+			slot.release();
+		}
+	}
+
+	enqueue(
+		token: object,
+		admissionKey: string | undefined,
+		fingerprint: string,
+		operation: (assertCurrent: () => void) => Promise<MessageAdmissionResult> | MessageAdmissionResult,
+	): Promise<MessageAdmissionResult> {
+		const existing = admissionKey ? this.records.get(admissionKey) : undefined;
+		if (existing) {
+			if (existing.fingerprint !== fingerprint) {
+				return Promise.reject(
+					new SessionAdmissionError(
+						"integrity",
+						`admission key ${admissionKey} already exists with a different payload`,
+					),
+				);
+			}
+			return existing.promise;
+		}
+		const generation = this.generation;
+		let releaseSlot!: () => void;
+		let resolveAdmission!: (result: MessageAdmissionResult) => void;
+		let rejectAdmission!: (reason: unknown) => void;
+		const done = new Promise<void>((resolve) => {
+			let released = false;
+			releaseSlot = () => {
+				if (released) return;
+				released = true;
+				resolve();
+			};
+		});
+		const slot: AdmissionSlot = {
+			token,
+			generation,
+			release: () => releaseSlot(),
+			reject: (reason) => rejectAdmission(reason),
+			cancelled: false,
+		};
+		this.slots.add(slot);
+		const previous = this.tail;
+		this.tail = previous.then(
+			() => done,
+			() => done,
+		);
+		const promise = new Promise<MessageAdmissionResult>((resolve, reject) => {
+			resolveAdmission = resolve;
+			rejectAdmission = reject;
+		});
+		const run = previous.then(async () => {
+			try {
+				if (slot.cancelled || this.activeToken !== token || this.generation !== generation) {
+					throw new SessionAdmissionError("session_replaced", "session was replaced before message admission");
+				}
+				return await operation(() => {
+					if (slot.cancelled || this.activeToken !== token || this.generation !== generation) {
+						throw new SessionAdmissionError("session_replaced", "session was replaced before message admission");
+					}
+				});
+			} finally {
+				slot.release();
+				this.slots.delete(slot);
+			}
+		});
+		void run.then(resolveAdmission, rejectAdmission);
+		if (admissionKey) {
+			const record = { fingerprint, promise };
+			this.records.set(admissionKey, record);
+			void promise.catch(() => {
+				if (this.records.get(admissionKey) === record) this.records.delete(admissionKey);
+			});
+		}
+		return promise;
+	}
+}
+
+// ponytail: process-lifetime registry keyed by session id; maintenance can evict after owner/lease handoff.
+const admissionQueues = new Map<string, SessionAdmissionQueue>();
+
+function getSessionAdmissionQueue(sessionId: string): SessionAdmissionQueue {
+	let queue = admissionQueues.get(sessionId);
+	if (!queue) {
+		queue = new SessionAdmissionQueue();
+		admissionQueues.set(sessionId, queue);
+	}
+	return queue;
 }
 
 /** Options for model/thinking mutations. */
@@ -376,6 +584,9 @@ export class AgentSession {
 	private _isAgentRunActive = false;
 	private _agentRunAbortRequested = false;
 	private _idleWaitPromise: Promise<void> | undefined;
+	private readonly _admissionQueue: SessionAdmissionQueue;
+	private readonly _admissionToken: object;
+	private _admissionUnbound = false;
 	private _resolveIdleWait: (() => void) | undefined;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
@@ -403,6 +614,7 @@ export class AgentSession {
 	 * retry is routed with it as `failed`, since the context no longer contains it.
 	 */
 	private _failedResponse: AssistantMessage | undefined;
+	private _interruption: AgentInterruption | undefined;
 
 	// Bash execution state
 	private readonly _bashAbortControllers = new Set<AbortController>();
@@ -421,6 +633,7 @@ export class AgentSession {
 	private _abortDuringBeforeSettle = false;
 	private _isEmittingAgentSettled = false;
 	private readonly _deferredSettledActions: Array<() => Promise<void>> = [];
+	private _runId = 0;
 
 	private _resourceLoader: ResourceLoader;
 	private _customTools: ToolDefinition[];
@@ -467,6 +680,11 @@ export class AgentSession {
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
+		this._admissionQueue = getSessionAdmissionQueue(this.sessionManager.getSessionId());
+		const maintenance = config.sessionStartEvent?.maintenance;
+		this._admissionToken = maintenance
+			? this._admissionQueue.adopt(maintenance.maintenanceId, maintenance.sessionId, maintenance.ownerEpoch)
+			: this._admissionQueue.bind();
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
@@ -1057,8 +1275,8 @@ export class AgentSession {
 		this._isAgentRunActive = false;
 		this._isEmittingAgentSettled = true;
 		try {
-			await this._extensionRunner.emit({ type: "agent_settled" });
-			this._emit({ type: "agent_settled" });
+			await this._extensionRunner.emit({ type: "agent_settled", interruption: this._interruption });
+			this._emit({ type: "agent_settled", interruption: this._interruption });
 		} finally {
 			this._isEmittingAgentSettled = false;
 		}
@@ -1126,7 +1344,11 @@ export class AgentSession {
 
 		// Emit to extensions first, then notify public listeners.
 		await this._emitExtensionEvent(event);
-		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
+		this._emit(
+			event.type === "agent_end"
+				? { ...event, willRetry: this._willRetryAfterAgentEnd(event), interruption: this._interruption }
+				: event,
+		);
 
 		// Handle session persistence
 		if (event.type === "message_end") {
@@ -1184,7 +1406,7 @@ export class AgentSession {
 	};
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
-		if (this._agentRunAbortRequested) return false;
+		if (this._agentRunAbortRequested || this._interruption) return false;
 		for (let i = event.messages.length - 1; i >= 0; i--) {
 			const message = event.messages[i];
 			if (message.role === "assistant") {
@@ -1275,7 +1497,11 @@ export class AgentSession {
 			this._turnIndex = 0;
 			await this._extensionRunner.emit({ type: "agent_start" });
 		} else if (event.type === "agent_end") {
-			await this._extensionRunner.emit({ type: "agent_end", messages: event.messages });
+			await this._extensionRunner.emit({
+				type: "agent_end",
+				messages: event.messages,
+				interruption: this._interruption,
+			});
 		} else if (event.type === "turn_start") {
 			const extensionEvent: TurnStartEvent = {
 				type: "turn_start",
@@ -1382,7 +1608,20 @@ export class AgentSession {
 	 * Remove all listeners and disconnect from agent.
 	 * Call this when completely done with the session.
 	 */
-	dispose(): void {
+	dispose(options?: { maintenance?: SessionMaintenanceToken }): void {
+		if (!this._admissionUnbound) {
+			this._admissionUnbound = true;
+			if (options?.maintenance) {
+				this._admissionQueue.park(
+					this._admissionToken,
+					options.maintenance.maintenanceId,
+					options.maintenance.sessionId,
+					options.maintenance.ownerEpoch,
+				);
+			} else {
+				this._admissionQueue.unbind(this._admissionToken);
+			}
+		}
 		try {
 			this.abortRetry();
 			this.abortCompaction();
@@ -1403,6 +1642,31 @@ export class AgentSession {
 			this._cacheWarmer.cancel();
 		}
 		cleanupSessionResources(this.sessionId);
+	}
+
+	captureMaintenanceQueue(): AgentSessionMaintenanceQueue {
+		return {
+			steering: [...this._steeringMessages],
+			followUp: [...this._followUpMessages],
+			nextTurn: structuredClone(this._pendingNextTurnMessages),
+			custom: structuredClone(this._pendingCustomMessages),
+			bash: structuredClone(this._pendingBashMessages),
+		};
+	}
+
+	restoreMaintenanceQueue(queue: AgentSessionMaintenanceQueue): void {
+		this._steeringMessages = [...queue.steering];
+		this._followUpMessages = [...queue.followUp];
+		this._pendingNextTurnMessages = queue.nextTurn.map((message) => structuredClone(message));
+		this._pendingCustomMessages = queue.custom.map((message) => structuredClone(message));
+		this._pendingBashMessages = queue.bash.map((message) => structuredClone(message));
+		for (const text of this._steeringMessages) {
+			this.agent.steer({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
+		}
+		for (const text of this._followUpMessages) {
+			this.agent.followUp({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
+		}
+		this._emitQueueUpdate();
 	}
 
 	// =========================================================================
@@ -1802,6 +2066,8 @@ export class AgentSession {
 		// The run records the loadout in the transcript; restored tools that did not register by now
 		// are dropped, so a tool that never registers does not stay pending.
 		this._pendingToolNames.clear();
+		this._runId += 1;
+		this._interruption = undefined;
 		this._isAgentRunActive = true;
 		try {
 			await this.agent.prompt(messages);
@@ -1826,6 +2092,7 @@ export class AgentSession {
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
+		if (this._interruption) return false;
 		const message = this._lastAssistantMessage;
 		const toolResults = this._lastAssistantToolResults;
 		this._lastAssistantMessage = undefined;
@@ -1951,144 +2218,190 @@ export class AgentSession {
 			this._deferredSettledActions.push(async () => await this.prompt(text, options));
 			return;
 		}
+		const work = await this._promptWithAdmission(text, options);
+		if (work.completion) await work.completion;
+	}
+
+	private async _promptWithAdmission(text: string, options?: PromptOptions): Promise<AdmissionWork> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
-		// Handle extension commands first (execute immediately, even during streaming)
-		// Extension commands manage their own LLM interaction via pi.sendMessage()
+		let preflightReported = false;
+		const reportPreflight = (disposition: PromptDisposition) => {
+			preflightReported = true;
+			preflightResult?.(disposition);
+		};
 		if (expandPromptTemplates && text.startsWith("/")) {
 			const handled = await this._tryExecuteExtensionCommand(text);
 			if (handled) {
-				// Extension command executed, no prompt to send
-				preflightResult?.("handled");
-				return;
+				reportPreflight("handled");
+				return { receipt: { status: "admitted", delivery: "custom", admissionKey: options?.admissionKey } };
 			}
 		}
 
-		if (this._compactionAbortController !== undefined) {
-			throw new Error(
-				"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
-			);
+		const admissionKey = options?.admissionKey;
+		if (admissionKey !== undefined && (admissionKey.length === 0 || admissionKey.length > 512)) {
+			throw new SessionAdmissionError("integrity", "admissionKey must contain 1-512 characters");
 		}
+		let completion: Promise<void> | undefined;
+		const receipt = await this._admissionQueue.enqueue(
+			this._admissionToken,
+			admissionKey,
+			admissionFingerprint({
+				text,
+				images: options?.images,
+				expandPromptTemplates,
+				streamingBehavior: options?.streamingBehavior,
+			}),
+			async (assertSessionCurrent) => {
+				const assertAdmissionCurrent = () => {
+					assertSessionCurrent();
+					if (options?.admissionGuard && !options.admissionGuard()) {
+						throw new SessionAdmissionError("finality", "notification became final before message admission");
+					}
+				};
+				let messages: AgentMessage[] | undefined;
+				try {
+					if (this._compactionAbortController !== undefined) {
+						throw new Error(
+							"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
+						);
+					}
 
-		// Emit input event for extension interception (before skill/template expansion)
-		const processedInput = await this._runInputHandlers(
-			text,
-			options?.images,
-			options?.source ?? "interactive",
-			this.isStreaming ? options?.streamingBehavior : undefined,
+					// Emit input event for extension interception (before skill/template expansion)
+					const processedInput = await this._runInputHandlers(
+						text,
+						options?.images,
+						options?.source ?? "interactive",
+						this.isStreaming ? options?.streamingBehavior : undefined,
+					);
+					assertAdmissionCurrent();
+					if (!processedInput) {
+						reportPreflight("handled");
+						return { status: "admitted", delivery: "custom", admissionKey };
+					}
+					const { text: currentText, images: currentImages } = processedInput;
+
+					// Expand skill commands (/skill:name args) and prompt templates (/template args)
+					let expandedText = currentText;
+					if (expandPromptTemplates) {
+						expandedText = this._expandSkillCommand(expandedText);
+						expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
+					}
+
+					// If streaming, queue via steer() or followUp() based on option
+					if (this.isStreaming) {
+						if (!options?.streamingBehavior) {
+							throw new Error(
+								"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
+							);
+						}
+						assertAdmissionCurrent();
+						if (options.streamingBehavior === "followUp") {
+							await this._queueFollowUp(expandedText, currentImages);
+						} else {
+							await this._queueSteer(expandedText, currentImages);
+						}
+						reportPreflight("queued");
+						return {
+							status: "admitted",
+							delivery: options.streamingBehavior,
+							admissionKey,
+						};
+					}
+
+					assertAdmissionCurrent();
+					// Flush any pending bash and custom messages before the new prompt
+					this._flushPendingBashMessages();
+					this._flushPendingCustomMessages();
+
+					// Validate model
+					if (!this.model) {
+						throw new Error(formatNoModelSelectedMessage());
+					}
+
+					const hasConfiguredAuth =
+						this._modelRuntime.hasConfiguredAuth(this.model.provider) ||
+						(await this._modelRuntime.checkAuth(this.model.provider)) !== undefined;
+					assertAdmissionCurrent();
+					if (!hasConfiguredAuth) {
+						const isOAuth = this._modelRuntime.isUsingOAuth(this.model.provider);
+						if (isOAuth) {
+							throw new Error(
+								`Authentication failed for "${this.model.provider}". ` +
+									`Credentials may have expired or network is unavailable. ` +
+									`Run '/login ${this.model.provider}' to re-authenticate.`,
+							);
+						}
+						throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+					}
+
+					// Check if we need to compact before sending (catches aborted responses).
+					// The user's new prompt is sent below, so do not call agent.continue() here.
+					const lastAssistant = this._findLastAssistantMessage();
+					if (lastAssistant) {
+						await this._checkCompaction(lastAssistant, false);
+					}
+					assertAdmissionCurrent();
+
+					// Emit before_agent_start before normalizing images so extension-driven model
+					// selection determines the resize profile used for the request and history.
+					const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
+					const result = await this._extensionRunner.emitBeforeAgentStart(
+						expandedText,
+						currentImages,
+						this._baseSystemPromptOptions,
+					);
+					assertAdmissionCurrent();
+					// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
+					// which updates the live loadout instead. An explicit edit wins; otherwise the live
+					// loadout is authoritative, so a setActiveTools() call is not undone here.
+					const handlerEditedTools =
+						result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
+						result.systemPromptOptions.selectedTools.some(
+							(name, index) => name !== selectedToolsBefore[index],
+						);
+					if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
+
+					const normalized = await this._normalizePromptImages(currentImages);
+					assertAdmissionCurrent();
+					const userText =
+						normalized.hints.length > 0 ? `${expandedText}\n\n${normalized.hints.join("\n")}` : expandedText;
+
+					messages = [];
+					const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: userText }];
+					userContent.push(...normalized.images);
+					messages.push({ role: "user", content: userContent, timestamp: Date.now() });
+
+					for (const msg of this._pendingNextTurnMessages) messages.push(msg);
+					this._pendingNextTurnMessages = [];
+
+					for (const msg of result.messages) {
+						messages.push({
+							role: "custom",
+							customType: msg.customType,
+							content: msg.content ?? [],
+							display: msg.display,
+							details: msg.details,
+							timestamp: Date.now(),
+						});
+					}
+					const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
+					this._runSystemPromptOptions = result.systemPromptOptions;
+					if (updateMessage) messages.unshift(updateMessage);
+
+					assertAdmissionCurrent();
+					reportPreflight("started");
+					completion = this._runAgentPrompt(messages);
+					return { status: "admitted", delivery: "turn", admissionKey };
+				} catch (error) {
+					throw error;
+				}
+			},
 		);
-		if (!processedInput) {
-			preflightResult?.("handled");
-			return;
+		if (!completion && !preflightReported) {
+			reportPreflight(receipt.delivery === "custom" ? "handled" : receipt.delivery === "turn" ? "started" : "queued");
 		}
-		const { text: currentText, images: currentImages } = processedInput;
-
-		// Expand skill commands (/skill:name args) and prompt templates (/template args)
-		let expandedText = currentText;
-		if (expandPromptTemplates) {
-			expandedText = this._expandSkillCommand(expandedText);
-			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
-		}
-
-		// If streaming, queue via steer() or followUp() based on option
-		if (this.isStreaming) {
-			if (!options?.streamingBehavior) {
-				throw new Error(
-					"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
-				);
-			}
-			if (options.streamingBehavior === "followUp") {
-				await this._queueFollowUp(expandedText, currentImages);
-			} else {
-				await this._queueSteer(expandedText, currentImages);
-			}
-			preflightResult?.("queued");
-			return;
-		}
-
-		// Flush any pending bash and custom messages before the new prompt
-		this._flushPendingBashMessages();
-		this._flushPendingCustomMessages();
-
-		// Validate model
-		if (!this.model) {
-			throw new Error(formatNoModelSelectedMessage());
-		}
-
-		const hasConfiguredAuth =
-			this._modelRuntime.hasConfiguredAuth(this.model.provider) ||
-			(await this._modelRuntime.checkAuth(this.model.provider)) !== undefined;
-		if (!hasConfiguredAuth) {
-			const isOAuth = this._modelRuntime.isUsingOAuth(this.model.provider);
-			if (isOAuth) {
-				throw new Error(
-					`Authentication failed for "${this.model.provider}". ` +
-						`Credentials may have expired or network is unavailable. ` +
-						`Run '/login ${this.model.provider}' to re-authenticate.`,
-				);
-			}
-			throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
-		}
-
-		// Check if we need to compact before sending (catches aborted responses).
-		// The user's new prompt is sent below, so do not call agent.continue() here.
-		const lastAssistant = this._findLastAssistantMessage();
-		if (lastAssistant) {
-			await this._checkCompaction(lastAssistant, false);
-		}
-
-		// Emit before_agent_start before normalizing images so extension-driven model
-		// selection determines the resize profile used for the request and history.
-		const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
-		const result = await this._extensionRunner.emitBeforeAgentStart(
-			expandedText,
-			currentImages,
-			this._baseSystemPromptOptions,
-		);
-		// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
-		// which updates the live loadout instead. An explicit edit wins; otherwise the live
-		// loadout is authoritative, so a setActiveTools() call is not undone here.
-		const handlerEditedTools =
-			result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
-			result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
-		if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
-
-		const normalized = await this._normalizePromptImages(currentImages);
-		const userText = normalized.hints.length > 0 ? `${expandedText}\n\n${normalized.hints.join("\n")}` : expandedText;
-
-		// Build messages only after hooks and image normalization have completed.
-		const messages: AgentMessage[] = [];
-		const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: userText }];
-		userContent.push(...normalized.images);
-		messages.push({
-			role: "user",
-			content: userContent,
-			timestamp: Date.now(),
-		});
-
-		// Inject any pending "nextTurn" messages as context alongside the user message
-		for (const msg of this._pendingNextTurnMessages) {
-			messages.push(msg);
-		}
-		this._pendingNextTurnMessages = [];
-
-		for (const msg of result.messages) {
-			messages.push({
-				role: "custom",
-				customType: msg.customType,
-				// Untyped extensions can pass null/missing content; normalize at ingestion.
-				content: msg.content ?? [],
-				display: msg.display,
-				details: msg.details,
-				timestamp: Date.now(),
-			});
-		}
-		const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
-		this._runSystemPromptOptions = result.systemPromptOptions;
-		if (updateMessage) messages.unshift(updateMessage);
-
-		preflightResult?.("started");
-		await this._runAgentPrompt(messages);
+		return { receipt, completion };
 	}
 
 	/**
@@ -2273,8 +2586,30 @@ export class AgentSession {
 	 */
 	async sendCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+			admissionKey?: string;
+			admissionGuard?: () => boolean;
+		},
 	): Promise<void> {
+		const work = await this._sendCustomMessageWithAdmission(message, options);
+		if (work.completion) await work.completion;
+	}
+
+	private async _sendCustomMessageWithAdmission<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+			admissionKey?: string;
+			admissionGuard?: () => boolean;
+		},
+	): Promise<AdmissionWork> {
+		const admissionKey = options?.admissionKey;
+		if (admissionKey !== undefined && (admissionKey.length === 0 || admissionKey.length > 512)) {
+			throw new SessionAdmissionError("integrity", "admissionKey must contain 1-512 characters");
+		}
 		const appMessage = {
 			role: "custom" as const,
 			customType: message.customType,
@@ -2284,29 +2619,50 @@ export class AgentSession {
 			details: message.details,
 			timestamp: Date.now(),
 		} satisfies CustomMessage<T>;
-		if (options?.deliverAs === "nextTurn") {
-			this._pendingNextTurnMessages.push(appMessage);
-		} else if (this.isStreaming && options?.triggerTurn !== false) {
-			if (options?.deliverAs === "followUp") {
-				this.agent.followUp(appMessage);
-			} else {
-				this.agent.steer(appMessage);
-			}
-		} else if (options?.triggerTurn) {
-			if (this._isEmittingAgentSettled) {
-				this._deferredSettledActions.push(async () => await this._runAgentPrompt(appMessage));
-				return;
-			}
-			await this._runAgentPrompt(appMessage);
-		} else if (this.isStreaming) {
-			// Appending now would put the message between an assistant tool call and its
-			// result, which providers that validate message order reject on replay. Defer
-			// to the end of the turn. Nothing is emitted yet: message events must not
-			// describe messages the session tree does not contain.
-			this._pendingCustomMessages.push(appMessage);
-		} else {
-			this._appendCustomMessage(appMessage);
-		}
+		let completion: Promise<void> | undefined;
+		const receipt = await this._admissionQueue.enqueue(
+			this._admissionToken,
+			admissionKey,
+			admissionFingerprint({ message, options: { ...options, admissionKey: undefined, admissionGuard: undefined } }),
+			async (assertSessionCurrent) => {
+				const assertAdmissionCurrent = () => {
+					assertSessionCurrent();
+					if (options?.admissionGuard && !options.admissionGuard()) {
+						throw new SessionAdmissionError("finality", "notification became final before message admission");
+					}
+				};
+				assertAdmissionCurrent();
+				if (options?.deliverAs === "nextTurn") {
+					this._pendingNextTurnMessages.push(appMessage);
+					return { status: "admitted", delivery: "nextTurn", admissionKey };
+				}
+				if (this.isStreaming && options?.triggerTurn !== false) {
+					if (options?.deliverAs === "followUp") this.agent.followUp(appMessage);
+					else this.agent.steer(appMessage);
+					return { status: "admitted", delivery: options?.deliverAs ?? "steer", admissionKey };
+				}
+				if (options?.triggerTurn) {
+					assertAdmissionCurrent();
+					if (this._isEmittingAgentSettled) {
+						this._deferredSettledActions.push(async () => await this._runAgentPrompt(appMessage));
+					} else {
+						completion = this._runAgentPrompt(appMessage);
+					}
+					return { status: "admitted", delivery: "turn", admissionKey };
+				}
+				if (this.isStreaming) {
+					// Appending now would put the message between an assistant tool call and its
+					// result, which providers that validate message order reject on replay. Defer
+					// to the end of the turn. Nothing is emitted yet: message events must not
+					// describe messages the session tree does not contain.
+					this._pendingCustomMessages.push(appMessage);
+					return { status: "admitted", delivery: "custom", admissionKey };
+				}
+				this._appendCustomMessage(appMessage);
+				return { status: "admitted", delivery: "custom", admissionKey };
+			},
+		);
+		return { receipt, completion };
 	}
 
 	private _appendCustomMessage(appMessage: CustomMessage): void {
@@ -2345,8 +2701,26 @@ export class AgentSession {
 	 */
 	async sendUserMessage(
 		content: string | (TextContent | ImageContent)[],
-		options?: { deliverAs?: "steer" | "followUp"; expandPromptTemplates?: boolean },
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
+			admissionKey?: string;
+			admissionGuard?: () => boolean;
+		},
 	): Promise<void> {
+		const work = await this._sendUserMessageWithAdmission(content, options);
+		if (work.completion) await work.completion;
+	}
+
+	private async _sendUserMessageWithAdmission(
+		content: string | (TextContent | ImageContent)[],
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
+			admissionKey?: string;
+			admissionGuard?: () => boolean;
+		},
+	): Promise<AdmissionWork> {
 		// Normalize content to text string + optional images
 		let text: string;
 		let images: ImageContent[] | undefined;
@@ -2367,12 +2741,84 @@ export class AgentSession {
 			if (images.length === 0) images = undefined;
 		}
 
-		await this.prompt(text, {
+		const work = await this._promptWithAdmission(text, {
 			expandPromptTemplates: options?.expandPromptTemplates ?? false,
 			streamingBehavior: options?.deliverAs,
+			admissionKey: options?.admissionKey,
+			admissionGuard: options?.admissionGuard,
 			images,
 			source: "extension",
 		});
+		if (work.completion) this._observeExtensionCompletion(work.completion);
+		return work;
+	}
+
+	private _observeExtensionCompletion(
+		completion: Promise<void>,
+		event: "send_message" | "send_user_message" = "send_user_message",
+	): void {
+		void completion.catch((error) => {
+			this._extensionRunner.emitError({
+				extensionPath: "<runtime>",
+				event,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+	}
+
+	private _rejectedAdmission(error: unknown, admissionKey?: string): MessageAdmissionResult {
+		const reason = error instanceof SessionAdmissionError ? error.code : "preflight";
+		return {
+			status: "rejected",
+			reason,
+			error: error instanceof Error ? error.message : String(error),
+			admissionKey,
+		};
+	}
+
+	private _sendCustomMessageForExtension<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn";
+			admissionKey?: string;
+			admissionGuard?: () => boolean;
+		},
+	): Promise<MessageAdmissionResult> {
+		return this._sendCustomMessageWithAdmission(message, options)
+			.then((work) => {
+				if (work.completion) this._observeExtensionCompletion(work.completion, "send_message");
+				return work.receipt;
+			})
+			.catch((error) => {
+				this._extensionRunner.emitError({
+					extensionPath: "<runtime>",
+					event: "send_message",
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return this._rejectedAdmission(error, options?.admissionKey);
+			});
+	}
+
+	private _sendUserMessageForExtension(
+		content: string | (TextContent | ImageContent)[],
+		options?: {
+			deliverAs?: "steer" | "followUp";
+			expandPromptTemplates?: boolean;
+			admissionKey?: string;
+			admissionGuard?: () => boolean;
+		},
+	): Promise<MessageAdmissionResult> {
+		return this._sendUserMessageWithAdmission(content, options)
+			.then((work) => work.receipt)
+			.catch((error) => {
+				this._extensionRunner.emitError({
+					extensionPath: "<runtime>",
+					event: "send_user_message",
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return this._rejectedAdmission(error, options?.admissionKey);
+			});
 	}
 
 	/**
@@ -2407,6 +2853,47 @@ export class AgentSession {
 
 	get resourceLoader(): ResourceLoader {
 		return this._resourceLoader;
+	}
+
+	get interruption(): AgentInterruption | undefined {
+		return this._interruption ? { ...this._interruption } : undefined;
+	}
+
+	/** Record a user-visible cancellation before aborting the current run. */
+	requestCancellation(
+		source: Extract<AgentInterruptionSource, "escape" | "task_cancel" | "extension"> = "extension",
+		reason = "cancelled",
+	): void {
+		if (this._interruption?.kind === "cancel") return;
+		this._interruption = {
+			kind: "cancel",
+			source,
+			reason,
+			runId: this._runId,
+		};
+	}
+
+	/** Record the non-destructive reason for a maintenance abort. */
+	requestMaintenance(token: SessionMaintenanceToken): void {
+		if (this._interruption?.kind === "cancel") return;
+		this._interruption = {
+			kind: "maintenance",
+			source: "maintenance",
+			reason: "human takeover",
+			runId: this._runId,
+			operationId: token.maintenanceId,
+		};
+	}
+
+	/** Record ordinary lifecycle teardown before aborting the current run. */
+	requestLifecycle(reason: string): void {
+		if (this._interruption?.kind === "cancel" || this._interruption?.kind === "maintenance") return;
+		this._interruption = {
+			kind: "lifecycle",
+			source: "lifecycle",
+			reason,
+			runId: this._runId,
+		};
 	}
 
 	/**
@@ -3347,24 +3834,8 @@ export class AgentSession {
 
 		runner.bindCore(
 			{
-				sendMessage: (message, options) => {
-					this.sendCustomMessage(message, options).catch((err) => {
-						runner.emitError({
-							extensionPath: "<runtime>",
-							event: "send_message",
-							error: err instanceof Error ? err.message : String(err),
-						});
-					});
-				},
-				sendUserMessage: (content, options) => {
-					this.sendUserMessage(content, options).catch((err) => {
-						runner.emitError({
-							extensionPath: "<runtime>",
-							event: "send_user_message",
-							error: err instanceof Error ? err.message : String(err),
-						});
-					});
-				},
+				sendMessage: (message, options) => this._sendCustomMessageForExtension(message, options),
+				sendUserMessage: (content, options) => this._sendUserMessageForExtension(content, options),
 				appendEntry: (customType, data) => {
 					const entryId = this.sessionManager.appendCustomEntry(customType, data);
 					const entry = this.sessionManager.getEntry(entryId);
@@ -3415,6 +3886,7 @@ export class AgentSession {
 						this._extensionAbortHandler();
 						return;
 					}
+					this.requestCancellation("extension", "extension requested cancellation");
 					void this.abort();
 				},
 				hasPendingMessages: () => this.pendingMessageCount > 0,
@@ -3742,6 +4214,7 @@ export class AgentSession {
 	 * @returns true if the caller should continue the agent, false otherwise
 	 */
 	private async _prepareRetry(message: AssistantMessage): Promise<boolean> {
+		if (this._interruption) return false;
 		const settings = this.settingsManager.getRetrySettings();
 		if (!settings.enabled) {
 			return false;
@@ -4358,8 +4831,8 @@ export class AgentSession {
 			{},
 			Object.getOwnPropertyDescriptors(this._extensionRunner.createCommandContext()),
 		) as ReplacedSessionContext;
-		context.sendMessage = (message, options) => this.sendCustomMessage(message, options);
-		context.sendUserMessage = (content, options) => this.sendUserMessage(content, options);
+		context.sendMessage = (message, options) => this._sendCustomMessageForExtension(message, options);
+		context.sendUserMessage = (content, options) => this._sendUserMessageForExtension(content, options);
 		return context;
 	}
 
