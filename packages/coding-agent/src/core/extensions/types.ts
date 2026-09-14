@@ -757,19 +757,24 @@ export interface SessionMaintenanceToken {
 	sessionId: string;
 	sessionFile?: string;
 	branchAnchor?: string | null;
+	/** Selected outgoing leaf after abort/settlement, sealed by the runtime. */
+	replacementAnchor?: string | null;
 	jobId?: string;
 	attemptId?: string;
+	reportPath?: string;
 }
 
 export interface MaintenancePrepareResult {
 	/** Return false to finish a no-change maintenance operation without replacement. */
 	replace?: boolean;
+	/** Runs against the still-live outgoing owner after no-change branch validation. */
+	afterNoReplace?: () => void | Promise<void>;
 }
 
 export interface SessionMaintenanceOptions {
 	token: SessionMaintenanceToken;
 	/** Runs after the old run is idle and before the replacement is opened. */
-	beforeReplace?: () => void | MaintenancePrepareResult | Promise<void | MaintenancePrepareResult>;
+	beforeReplace?: () => void | MaintenancePrepareResult | Promise<void> | Promise<MaintenancePrepareResult>;
 }
 
 export interface SessionStartEvent {

@@ -55,6 +55,60 @@ export class SessionImportFileNotFoundError extends Error {
 	}
 }
 
+export function recordMaintenanceFailure(sessionPath: string, token: SessionMaintenanceToken): void {
+	const owner = SessionManager.open(sessionPath);
+	if (owner.getSessionId() !== token.sessionId) throw new Error("maintenance failure session identity changed");
+	const eventId = `session-maintenance:error:${token.maintenanceId}:${token.ownerEpoch}`;
+	if (
+		owner
+			.getEntries()
+			.some(
+				(entry) =>
+					entry.type === "custom" &&
+					entry.customType === "session-maintenance/v1" &&
+					(entry.data as { eventId?: string })?.eventId === eventId,
+			)
+	)
+		return;
+	const anchor = token.replacementAnchor ?? token.branchAnchor;
+	if (anchor != null) {
+		let latest = anchor;
+		const descendants = new Set([anchor]);
+		for (const entry of owner.getEntries()) {
+			if (entry.id === anchor || (entry.parentId !== null && descendants.has(entry.parentId))) {
+				descendants.add(entry.id);
+				latest = entry.id;
+			}
+		}
+		owner.branch(latest);
+	}
+	// A human cancellation or final outcome always wins over maintenance.
+	if (
+		owner.getBranch().some((entry) => {
+			if (entry.type !== "custom" || entry.customType !== "task-outcome/v1") return false;
+			const data = entry.data as { kind?: string; jobId?: string; attemptId?: string; final?: boolean };
+			return (
+				data.jobId === token.jobId &&
+				data.attemptId === token.attemptId &&
+				(data.kind === "cancellation_requested" || (data.kind === "outcome" && data.final === true))
+			);
+		})
+	)
+		return;
+	owner.appendCustomEntry("session-maintenance/v1", {
+		version: 1,
+		eventId,
+		kind: "maintenance_error",
+		at: new Date().toISOString(),
+		jobId: token.jobId,
+		attemptId: token.attemptId,
+		reportPath: token.reportPath,
+		maintenance: { ...token, phase: "error", error: "maintenance replacement failed; manual recovery required" },
+		summary: "maintenance replacement failed; manual recovery required",
+		final: false,
+	});
+}
+
 function extractUserMessageText(content: string | Array<{ type: string; text?: string }>): string {
 	if (typeof content === "string") {
 		return content;
@@ -81,6 +135,7 @@ export class AgentSessionRuntime {
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
 	private _diagnostics: AgentSessionRuntimeDiagnostic[];
 	private _modelFallbackMessage?: string;
+	private maintenanceFailed = false;
 	private maintenanceOperation?: {
 		token: SessionMaintenanceToken;
 		promise: Promise<{ cancelled: boolean }>;
@@ -120,12 +175,19 @@ export class AgentSessionRuntime {
 		return this._modelFallbackMessage;
 	}
 
-	private assertMaintenanceAvailable(): void {
-		// The partial transfer retains old admission callbacks and lacks verified
-		// bind rollback. Reject before abort/rewrite; never use lifecycle teardown.
-		throw new Error(
-			"Maintenance cleanup is unavailable: live ownership transfer is not yet verified. No interruption or cleanup was performed.",
-		);
+	private assertMaintenanceAvailable(token: SessionMaintenanceToken): void {
+		const marker = this.session.sessionManager.getBranch().find((entry) => entry.id === token.branchAnchor);
+		const data =
+			marker?.type === "custom"
+				? (marker.data as { kind?: string; maintenance?: SessionMaintenanceToken })
+				: undefined;
+		if (
+			data?.kind !== "maintenance_begin" ||
+			data.maintenance?.maintenanceId !== token.maintenanceId ||
+			data.maintenance?.ownerEpoch !== token.ownerEpoch
+		) {
+			throw new Error("maintenance requires a durable ownership marker before interruption");
+		}
 	}
 
 	private assertNoMaintenanceTransition(): void {
@@ -252,30 +314,50 @@ export class AgentSessionRuntime {
 				throw new Error("maintenance was superseded by cancellation");
 		};
 		assertNotCancelled();
+		// Settlement can append messages and maintenance_paused. It may extend
+		// the marker's lineage, never navigate to a different branch.
+		if (
+			token.branchAnchor !== undefined &&
+			token.branchAnchor !== null &&
+			!this.session.sessionManager.getBranch().some((entry) => entry.id === token.branchAnchor)
+		) {
+			throw new Error("session branch changed while draining maintenance");
+		}
+		const replacementAnchor = this.session.sessionManager.getLeafId();
+		token.replacementAnchor = replacementAnchor;
 		const prepared = await options.maintenance.beforeReplace?.();
 		assertNotCancelled();
-		if (token.branchAnchor !== undefined && token.branchAnchor !== this.session.sessionManager.getLeafId()) {
+		if (
+			replacementAnchor !== this.session.sessionManager.getLeafId() ||
+			token.replacementAnchor !== replacementAnchor
+		) {
 			throw new Error("session branch changed during maintenance cleanup");
 		}
 		if (prepared && prepared.replace === false) {
+			await prepared.afterNoReplace?.();
 			return { cancelled: false };
 		}
 
-		// Do not open the replacement until cleanup has finished. Opening first
-		// lets old callbacks write into the replacement's in-memory cache.
-		const sessionManager = SessionManager.open(sessionPath, undefined, options.cwdOverride);
-		assertSessionCwdExists(sessionManager, this.cwd);
-		const previousSessionFile = this.session.sessionFile;
-		await emitSessionShutdownEvent(this.session.extensionRunner, {
-			type: "session_shutdown",
-			reason: "maintenance",
-			targetSessionFile: sessionManager.getSessionFile(),
-			maintenance: token,
-		});
-		this.beforeSessionInvalidate?.();
-		this.session.dispose({ maintenance: token });
-		this.apply(
-			await this.createRuntime({
+		let replacementSession: AgentSession | undefined;
+		try {
+			// Reopen only after cleanup, then preserve the sealed selected branch.
+			const sessionManager = SessionManager.open(sessionPath, undefined, options.cwdOverride);
+			assertSessionCwdExists(sessionManager, this.cwd);
+			if (sessionManager.getSessionId() !== token.sessionId) {
+				throw new Error("maintenance replacement changed the session identity");
+			}
+			if (replacementAnchor === null) sessionManager.resetLeaf();
+			else sessionManager.branch(replacementAnchor);
+			const previousSessionFile = this.session.sessionFile;
+			await emitSessionShutdownEvent(this.session.extensionRunner, {
+				type: "session_shutdown",
+				reason: "maintenance",
+				targetSessionFile: sessionManager.getSessionFile(),
+				maintenance: token,
+			});
+			this.beforeSessionInvalidate?.();
+			this.session.dispose({ maintenance: token });
+			const replacement = await this.createRuntime({
 				cwd: sessionManager.getCwd(),
 				agentDir: this.services.agentDir,
 				sessionManager,
@@ -286,11 +368,24 @@ export class AgentSessionRuntime {
 					maintenance: token,
 				},
 				projectTrustContext: options.projectTrustContextFactory?.(sessionManager.getCwd()),
-			}),
-		);
-		this.session.restoreMaintenanceQueue(queued);
-		await this.finishSessionReplacement(options.withSession);
-		return { cancelled: false };
+			});
+			replacementSession = replacement.session;
+			this.apply(replacement);
+			this.session.restoreMaintenanceQueue(queued);
+			await this.finishSessionReplacement(options.withSession);
+			return { cancelled: false };
+		} catch (error) {
+			// Do not let a partially bound replacement publish a quit/final outcome
+			// from stale in-memory state after the durable failure is written.
+			this.maintenanceFailed = true;
+			try {
+				replacementSession?.dispose();
+			} finally {
+				// No extension ctx, task manager, or UI survives in the failure owner.
+				recordMaintenanceFailure(sessionPath, token);
+			}
+			throw error;
+		}
 	}
 
 	private startMaintenance(
@@ -336,7 +431,7 @@ export class AgentSessionRuntime {
 		},
 	): Promise<{ cancelled: boolean }> {
 		if (options?.maintenance) {
-			this.assertMaintenanceAvailable();
+			this.assertMaintenanceAvailable(options.maintenance.token);
 			return this.startMaintenance(sessionPath, {
 				maintenance: options.maintenance,
 				cwdOverride: options.cwdOverride,
@@ -549,6 +644,10 @@ export class AgentSessionRuntime {
 	}
 
 	async dispose(): Promise<void> {
+		if (this.maintenanceFailed) {
+			this.session.dispose();
+			return;
+		}
 		this.session.requestLifecycle("session quit");
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",

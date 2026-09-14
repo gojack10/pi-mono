@@ -1106,6 +1106,12 @@ export class ExtensionRunner {
 						error: message,
 						stack,
 					});
+					if (
+						(event.type === "session_start" || event.type === "session_shutdown") &&
+						event.reason === "maintenance"
+					) {
+						throw err;
+					}
 				}
 			}
 		}

@@ -8,6 +8,7 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
+	recordMaintenanceFailure,
 } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -137,7 +138,7 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 					},
 					withSession,
 				}),
-			).rejects.toThrow("ownership transfer is not yet verified");
+			).rejects.toThrow("durable ownership marker");
 			status.mockRestore();
 		}
 		expect(abort).not.toHaveBeenCalled();
@@ -149,6 +150,190 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		abort.mockRestore();
 		request.mockRestore();
 	});
+
+	it("validates marker lineage then seals the drained anchor before no-change release", async () => {
+		const { runtimeHost } = await createRuntimeHost(() => {});
+		const session = runtimeHost.session;
+		const sm = session.sessionManager;
+		sm.appendCustomEntry("maintenance_begin", {});
+		const token = {
+			maintenanceId: "anchor-test",
+			ownerEpoch: "owner",
+			sessionId: session.sessionId,
+			sessionFile: session.sessionFile,
+			branchAnchor: sm.getLeafId(),
+			replacementAnchor: undefined as string | null | undefined,
+		};
+		const abort = vi.spyOn(session, "abort").mockImplementation(async () => {
+			sm.appendCustomEntry("maintenance_paused", {});
+		});
+		const release = vi.fn(() => {
+			sm.appendCustomEntry("maintenance_resume", {});
+		});
+		const beforeReplace = vi.fn(() => {
+			expect(token.replacementAnchor).toBe(sm.getLeafId());
+			expect(token.replacementAnchor).not.toBe(token.branchAnchor);
+			return { replace: false, afterNoReplace: release };
+		});
+		// Invalid public ownership is tested above; qualify the drain boundary separately.
+		await expect(
+			(runtimeHost as any).runMaintenance(session.sessionFile!, {
+				maintenance: { token, beforeReplace },
+			}),
+		).resolves.toEqual({ cancelled: false });
+		expect(release).toHaveBeenCalledOnce();
+		expect(runtimeHost.session).toBe(session);
+		abort.mockRestore();
+	});
+
+	it("cancellation while draining supersedes maintenance before cleanup", async () => {
+		const { runtimeHost } = await createRuntimeHost(() => {});
+		const session = runtimeHost.session;
+		session.sessionManager.appendCustomEntry("maintenance_begin", {});
+		const beforeReplace = vi.fn();
+		const abort = vi.spyOn(session, "abort").mockImplementation(async () => {
+			session.requestCancellation("task_cancel", "human cancelled");
+		});
+		await expect(
+			(runtimeHost as any).runMaintenance(session.sessionFile!, {
+				maintenance: {
+					token: {
+						maintenanceId: "cancel",
+						ownerEpoch: "owner",
+						sessionId: session.sessionId,
+						branchAnchor: session.sessionManager.getLeafId(),
+					},
+					beforeReplace,
+				},
+			}),
+		).rejects.toThrow("superseded by cancellation");
+		expect(beforeReplace).not.toHaveBeenCalled();
+		expect(session.interruption?.kind).toBe("cancel");
+		expect(runtimeHost.session).toBe(session);
+		abort.mockRestore();
+	});
+
+	it("rejects cleanup branch mutation before releasing a no-change lease", async () => {
+		const { runtimeHost } = await createRuntimeHost(() => {});
+		const session = runtimeHost.session;
+		const sm = session.sessionManager;
+		sm.appendCustomEntry("maintenance_begin", {});
+		const release = vi.fn();
+		await expect(
+			(runtimeHost as any).runMaintenance(session.sessionFile!, {
+				maintenance: {
+					token: {
+						maintenanceId: "mutation",
+						ownerEpoch: "owner",
+						sessionId: session.sessionId,
+						branchAnchor: sm.getLeafId(),
+					},
+					beforeReplace: () => {
+						sm.appendCustomEntry("unexpected", {});
+						return { replace: false, afterNoReplace: release };
+					},
+				},
+			}),
+		).rejects.toThrow("session branch changed during maintenance cleanup");
+		expect(release).not.toHaveBeenCalled();
+		expect(runtimeHost.session).toBe(session);
+	});
+
+	it("enables public leaf replacement with a durable marker and a fresh usable runtime", async () => {
+		const { runtimeHost } = await createRuntimeHost(() => {});
+		const old = runtimeHost.session;
+		const sm = old.sessionManager;
+		sm.appendMessage(fauxAssistantMessage("saved locally"));
+		const token = {
+			maintenanceId: "enabled",
+			ownerEpoch: "owner",
+			sessionId: old.sessionId,
+			sessionFile: old.sessionFile,
+			branchAnchor: undefined as string | null | undefined,
+		};
+		sm.appendCustomEntry("task-outcome/v1", { kind: "maintenance_begin", maintenance: { ...token } });
+		token.branchAnchor = sm.getLeafId();
+		runtimeHost.setRebindSession((session) => session.bindExtensions({}));
+		const callback = vi.fn(async (ctx) => {
+			ctx.sessionManager.getEntries();
+		});
+		await expect(
+			runtimeHost.switchSession(old.sessionFile!, {
+				maintenance: { token, beforeReplace: () => ({ replace: true }) },
+				withSession: callback,
+			}),
+		).resolves.toEqual({ cancelled: false });
+		expect(callback).toHaveBeenCalledOnce();
+		expect(runtimeHost.session).not.toBe(old);
+		expect(runtimeHost.session.sessionId).toBe(token.sessionId);
+		runtimeHost.session.sessionManager.appendCustomEntry("usable", {});
+		expect(runtimeHost.session.sessionManager.getLeafEntry()?.type).toBe("custom");
+		expect(
+			runtimeHost.session.sessionManager
+				.getEntries()
+				.some((entry) => entry.type === "custom" && entry.customType === "session-maintenance/v1"),
+		).toBe(false);
+	});
+
+	it.each(["create", "bind", "session_start"])(
+		"records a durable nonfinal error after disposal on %s failure",
+		async (phase) => {
+			const quits = vi.fn();
+			const { runtimeHost } = await createRuntimeHost((pi) => {
+				pi.on("session_shutdown", (event) => {
+					if (event.reason === "quit") quits();
+				});
+				pi.on("session_start", (event) => {
+					if (phase === "session_start" && event.reason === "maintenance")
+						throw new Error("injected lifecycle failure");
+				});
+			});
+			const old = runtimeHost.session;
+			const sm = old.sessionManager;
+			sm.appendMessage(fauxAssistantMessage("saved without a provider request"));
+			sm.appendCustomEntry("maintenance_begin", {});
+			const file = old.sessionFile!;
+			const token = {
+				maintenanceId: `failure-${phase}`,
+				ownerEpoch: "owner",
+				sessionId: old.sessionId,
+				sessionFile: file,
+				branchAnchor: sm.getLeafId(),
+				jobId: "job",
+				attemptId: "attempt",
+				reportPath: "/tmp/report",
+			};
+			const disposed = vi.spyOn(old, "dispose");
+			const create =
+				phase === "create"
+					? vi.spyOn(runtimeHost as any, "createRuntime").mockRejectedValue(new Error("injected create failure"))
+					: undefined;
+			runtimeHost.setRebindSession(async (session) => {
+				if (phase === "bind") throw new Error("injected bind failure");
+				await session.bindExtensions({});
+			});
+			await expect((runtimeHost as any).runMaintenance(file, { maintenance: { token } })).rejects.toThrow(
+				"injected",
+			);
+			expect(disposed).toHaveBeenCalled();
+			recordMaintenanceFailure(file, token);
+			const errors = SessionManager.open(file)
+				.getBranch()
+				.filter((entry) => entry.type === "custom" && entry.customType === "session-maintenance/v1");
+			expect(errors).toHaveLength(1);
+			expect((errors[0] as any).data).toMatchObject({
+				kind: "maintenance_error",
+				final: false,
+				maintenance: { maintenanceId: token.maintenanceId, ownerEpoch: "owner", phase: "error" },
+				jobId: "job",
+				attemptId: "attempt",
+			});
+			create?.mockRestore();
+			runtimeHost.setRebindSession(undefined);
+			await runtimeHost.dispose();
+			expect(quits).not.toHaveBeenCalled();
+		},
+	);
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {
 		const events: RecordedSessionEvent[] = [];
