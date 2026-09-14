@@ -751,14 +751,12 @@ export interface McpServersChangeEvent {
 export interface SessionMaintenanceToken {
 	/** Stable id for one same-session maintenance transaction. */
 	maintenanceId: string;
-	/** Monotonic/logical owner epoch fencing the old runtime from the replacement. */
+	/** Unique operation epoch fencing stale maintenance callbacks. */
 	ownerEpoch: string;
 	/** Session identity that must survive the handoff. */
 	sessionId: string;
 	sessionFile?: string;
 	branchAnchor?: string | null;
-	/** Selected outgoing leaf after abort/settlement, sealed by the runtime. */
-	replacementAnchor?: string | null;
 	jobId?: string;
 	attemptId?: string;
 	reportPath?: string;
@@ -767,24 +765,22 @@ export interface SessionMaintenanceToken {
 export interface MaintenancePrepareResult {
 	/** Return false to finish a no-change maintenance operation without replacement. */
 	replace?: boolean;
-	/** Runs against the still-live outgoing owner after no-change branch validation. */
+	/** Runs against the live owner after no-change branch validation. */
 	afterNoReplace?: () => void | Promise<void>;
 }
 
 export interface SessionMaintenanceOptions {
 	token: SessionMaintenanceToken;
-	/** Runs after the old run is idle and before the replacement is opened. */
+	/** Runs after the run is idle and before the current transcript is refreshed. */
 	beforeReplace?: () => void | MaintenancePrepareResult | Promise<void> | Promise<MaintenancePrepareResult>;
 }
 
 export interface SessionStartEvent {
 	type: "session_start";
 	/** Why this session start happened. */
-	reason: "startup" | "reload" | "new" | "resume" | "fork" | "maintenance";
+	reason: "startup" | "reload" | "new" | "resume" | "fork";
 	/** Previously active session file. Present for "new", "resume", and "fork". */
 	previousSessionFile?: string;
-	/** Present only when a same-session maintenance lease is being adopted. */
-	maintenance?: SessionMaintenanceToken;
 }
 
 /** Fired when the current session metadata changes. */
@@ -850,11 +846,9 @@ export interface SessionCompactFailedEvent {
 /** Fired before an extension runtime is torn down due to quit, reload, or session replacement. */
 export interface SessionShutdownEvent {
 	type: "session_shutdown";
-	reason: "quit" | "reload" | "new" | "resume" | "fork" | "maintenance";
+	reason: "quit" | "reload" | "new" | "resume" | "fork";
 	/** Destination session file when shutting down due to session replacement. */
 	targetSessionFile?: string;
-	/** Present only for a non-destructive same-session maintenance handoff. */
-	maintenance?: SessionMaintenanceToken;
 }
 
 /** Preparation data for tree navigation */

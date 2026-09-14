@@ -204,6 +204,7 @@ export type AgentSessionEvent =
 			interruption?: AgentInterruption;
 	  }
 	| { type: "agent_settled"; interruption?: AgentInterruption }
+	| { type: "session_refreshed" }
 	| {
 			type: "queue_update";
 			steering: readonly string[];
@@ -327,14 +328,6 @@ interface AdmissionWork {
 	completion?: Promise<void>;
 }
 
-export interface AgentSessionMaintenanceQueue {
-	steering: readonly string[];
-	followUp: readonly string[];
-	nextTurn: readonly CustomMessage[];
-	custom: readonly CustomMessage[];
-	bash: readonly BashExecutionMessage[];
-}
-
 type AdmissionErrorCode = "session_replaced" | "integrity" | "finality";
 
 class SessionAdmissionError extends Error {
@@ -377,8 +370,6 @@ class SessionAdmissionQueue {
 	private activeToken: object | undefined;
 	private readonly records = new Map<string, AdmissionRecord>();
 	private readonly slots = new Set<AdmissionSlot>();
-	private readonly maintenanceTokens = new Map<string, { token: object; sessionId: string; ownerEpoch: string }>();
-
 	bind(): object {
 		if (this.activeToken) this.cancelToken(this.activeToken);
 		const token = {};
@@ -387,41 +378,10 @@ class SessionAdmissionQueue {
 		return token;
 	}
 
-	park(token: object, maintenanceId: string, sessionId: string, ownerEpoch: string): void {
-		if (this.activeToken !== token) {
-			throw new SessionAdmissionError("session_replaced", "session admission owner is no longer current");
-		}
-		const existing = this.maintenanceTokens.get(maintenanceId);
-		if (
-			existing &&
-			(existing.token !== token || existing.sessionId !== sessionId || existing.ownerEpoch !== ownerEpoch)
-		) {
-			throw new SessionAdmissionError("integrity", "maintenance admission token conflicts with its owner");
-		}
-		this.maintenanceTokens.set(maintenanceId, { token, sessionId, ownerEpoch });
-	}
-
-	adopt(maintenanceId: string, sessionId: string, ownerEpoch: string): object {
-		const handoff = this.maintenanceTokens.get(maintenanceId);
-		if (
-			!handoff ||
-			handoff.sessionId !== sessionId ||
-			handoff.ownerEpoch !== ownerEpoch ||
-			this.activeToken !== handoff.token
-		) {
-			throw new SessionAdmissionError("session_replaced", "maintenance admission handoff is unavailable");
-		}
-		this.maintenanceTokens.delete(maintenanceId);
-		return handoff.token;
-	}
-
 	unbind(token: object): void {
 		if (this.activeToken !== token) return;
 		this.activeToken = undefined;
 		this.generation++;
-		for (const [maintenanceId, handoff] of this.maintenanceTokens) {
-			if (handoff.token === token) this.maintenanceTokens.delete(maintenanceId);
-		}
 		this.cancelToken(token);
 	}
 
@@ -682,10 +642,7 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this._admissionQueue = getSessionAdmissionQueue(this.sessionManager.getSessionId());
-		const maintenance = config.sessionStartEvent?.maintenance;
-		this._admissionToken = maintenance
-			? this._admissionQueue.adopt(maintenance.maintenanceId, maintenance.sessionId, maintenance.ownerEpoch)
-			: this._admissionQueue.bind();
+		this._admissionToken = this._admissionQueue.bind();
 		this.settingsManager = config.settingsManager;
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
@@ -1232,6 +1189,11 @@ export class AgentSession {
 	}
 
 	/** Emit an event to all listeners */
+	/** Host-only transcript invalidation; does not rebind extensions or emit lifecycle events. */
+	notifySessionRefreshed(): void {
+		this._emit({ type: "session_refreshed" });
+	}
+
 	private _emit(event: AgentSessionEvent): void {
 		for (const l of this._eventListeners) {
 			l(event);
@@ -1609,19 +1571,10 @@ export class AgentSession {
 	 * Remove all listeners and disconnect from agent.
 	 * Call this when completely done with the session.
 	 */
-	dispose(options?: { maintenance?: SessionMaintenanceToken }): void {
+	dispose(): void {
 		if (!this._admissionUnbound) {
 			this._admissionUnbound = true;
-			if (options?.maintenance) {
-				this._admissionQueue.park(
-					this._admissionToken,
-					options.maintenance.maintenanceId,
-					options.maintenance.sessionId,
-					options.maintenance.ownerEpoch,
-				);
-			} else {
-				this._admissionQueue.unbind(this._admissionToken);
-			}
+			this._admissionQueue.unbind(this._admissionToken);
 		}
 		try {
 			this.abortRetry();
@@ -1643,31 +1596,6 @@ export class AgentSession {
 			this._cacheWarmer.cancel();
 		}
 		cleanupSessionResources(this.sessionId);
-	}
-
-	captureMaintenanceQueue(): AgentSessionMaintenanceQueue {
-		return {
-			steering: [...this._steeringMessages],
-			followUp: [...this._followUpMessages],
-			nextTurn: structuredClone(this._pendingNextTurnMessages),
-			custom: structuredClone(this._pendingCustomMessages),
-			bash: structuredClone(this._pendingBashMessages),
-		};
-	}
-
-	restoreMaintenanceQueue(queue: AgentSessionMaintenanceQueue): void {
-		this._steeringMessages = [...queue.steering];
-		this._followUpMessages = [...queue.followUp];
-		this._pendingNextTurnMessages = queue.nextTurn.map((message) => structuredClone(message));
-		this._pendingCustomMessages = queue.custom.map((message) => structuredClone(message));
-		this._pendingBashMessages = queue.bash.map((message) => structuredClone(message));
-		for (const text of this._steeringMessages) {
-			this.agent.steer({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
-		}
-		for (const text of this._followUpMessages) {
-			this.agent.followUp({ role: "user", content: [{ type: "text", text }], timestamp: Date.now() });
-		}
-		this._emitQueueUpdate();
 	}
 
 	// =========================================================================

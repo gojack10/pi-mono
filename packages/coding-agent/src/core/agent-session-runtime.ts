@@ -1,7 +1,7 @@
 import { constants, copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, parse, resolve } from "node:path";
 import { resolvePath } from "../utils/paths.ts";
-import type { AgentSession, AgentSessionMaintenanceQueue } from "./agent-session.ts";
+import type { AgentSession } from "./agent-session.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
 import type {
 	ProjectTrustContext,
@@ -55,60 +55,6 @@ export class SessionImportFileNotFoundError extends Error {
 	}
 }
 
-export function recordMaintenanceFailure(sessionPath: string, token: SessionMaintenanceToken): void {
-	const owner = SessionManager.open(sessionPath);
-	if (owner.getSessionId() !== token.sessionId) throw new Error("maintenance failure session identity changed");
-	const eventId = `session-maintenance:error:${token.maintenanceId}:${token.ownerEpoch}`;
-	if (
-		owner
-			.getEntries()
-			.some(
-				(entry) =>
-					entry.type === "custom" &&
-					entry.customType === "session-maintenance/v1" &&
-					(entry.data as { eventId?: string })?.eventId === eventId,
-			)
-	)
-		return;
-	const anchor = token.replacementAnchor ?? token.branchAnchor;
-	if (anchor != null) {
-		let latest = anchor;
-		const descendants = new Set([anchor]);
-		for (const entry of owner.getEntries()) {
-			if (entry.id === anchor || (entry.parentId !== null && descendants.has(entry.parentId))) {
-				descendants.add(entry.id);
-				latest = entry.id;
-			}
-		}
-		owner.branch(latest);
-	}
-	// A human cancellation or final outcome always wins over maintenance.
-	if (
-		owner.getBranch().some((entry) => {
-			if (entry.type !== "custom" || entry.customType !== "task-outcome/v1") return false;
-			const data = entry.data as { kind?: string; jobId?: string; attemptId?: string; final?: boolean };
-			return (
-				data.jobId === token.jobId &&
-				data.attemptId === token.attemptId &&
-				(data.kind === "cancellation_requested" || (data.kind === "outcome" && data.final === true))
-			);
-		})
-	)
-		return;
-	owner.appendCustomEntry("session-maintenance/v1", {
-		version: 1,
-		eventId,
-		kind: "maintenance_error",
-		at: new Date().toISOString(),
-		jobId: token.jobId,
-		attemptId: token.attemptId,
-		reportPath: token.reportPath,
-		maintenance: { ...token, phase: "error", error: "maintenance replacement failed; manual recovery required" },
-		summary: "maintenance replacement failed; manual recovery required",
-		final: false,
-	});
-}
-
 function extractUserMessageText(content: string | Array<{ type: string; text?: string }>): string {
 	if (typeof content === "string") {
 		return content;
@@ -135,7 +81,6 @@ export class AgentSessionRuntime {
 	private readonly createRuntime: CreateAgentSessionRuntimeFactory;
 	private _diagnostics: AgentSessionRuntimeDiagnostic[];
 	private _modelFallbackMessage?: string;
-	private maintenanceFailed = false;
 	private maintenanceOperation?: {
 		token: SessionMaintenanceToken;
 		promise: Promise<{ cancelled: boolean }>;
@@ -244,16 +189,10 @@ export class AgentSessionRuntime {
 		return { cancelled: result?.cancel === true };
 	}
 
-	private async teardownCurrent(
-		reason: SessionShutdownEvent["reason"],
-		targetSessionFile?: string,
-		maintenance?: SessionMaintenanceToken,
-	): Promise<AgentSessionMaintenanceQueue | undefined> {
+	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
 		// Record the intent before aborting. An aborted assistant message alone is
 		// not enough to distinguish a human cancellation from a lifecycle handoff.
-		if (maintenance) this.session.requestMaintenance(maintenance);
-		else this.session.requestLifecycle(`session ${reason}`);
-		const queued = maintenance ? this.session.captureMaintenanceQueue() : undefined;
+		this.session.requestLifecycle(`session ${reason}`);
 		// Settle any active response first so the aborted turn (including tool
 		// results) is persisted to the outgoing session before it is replaced.
 		await this.session.abort();
@@ -261,11 +200,9 @@ export class AgentSessionRuntime {
 			type: "session_shutdown",
 			reason,
 			targetSessionFile,
-			...(maintenance ? { maintenance } : {}),
 		});
 		this.beforeSessionInvalidate?.();
-		this.session.dispose(maintenance ? { maintenance } : undefined);
-		return queued;
+		this.session.dispose();
 	}
 
 	private apply(result: CreateAgentSessionRuntimeResult): void {
@@ -307,7 +244,6 @@ export class AgentSessionRuntime {
 		}
 
 		this.session.requestMaintenance(token);
-		const queued = this.session.captureMaintenanceQueue();
 		await this.session.abort();
 		const assertNotCancelled = () => {
 			if (this.session.interruption?.kind === "cancel")
@@ -323,14 +259,10 @@ export class AgentSessionRuntime {
 		) {
 			throw new Error("session branch changed while draining maintenance");
 		}
-		const replacementAnchor = this.session.sessionManager.getLeafId();
-		token.replacementAnchor = replacementAnchor;
+		const refreshAnchor = this.session.sessionManager.getLeafId();
 		const prepared = await options.maintenance.beforeReplace?.();
 		assertNotCancelled();
-		if (
-			replacementAnchor !== this.session.sessionManager.getLeafId() ||
-			token.replacementAnchor !== replacementAnchor
-		) {
+		if (refreshAnchor !== this.session.sessionManager.getLeafId()) {
 			throw new Error("session branch changed during maintenance cleanup");
 		}
 		if (prepared && prepared.replace === false) {
@@ -338,54 +270,29 @@ export class AgentSessionRuntime {
 			return { cancelled: false };
 		}
 
-		let replacementSession: AgentSession | undefined;
-		try {
-			// Reopen only after cleanup, then preserve the sealed selected branch.
-			const sessionManager = SessionManager.open(sessionPath, undefined, options.cwdOverride);
-			assertSessionCwdExists(sessionManager, this.cwd);
-			if (sessionManager.getSessionId() !== token.sessionId) {
-				throw new Error("maintenance replacement changed the session identity");
-			}
-			if (replacementAnchor === null) sessionManager.resetLeaf();
-			else sessionManager.branch(replacementAnchor);
-			const previousSessionFile = this.session.sessionFile;
-			await emitSessionShutdownEvent(this.session.extensionRunner, {
-				type: "session_shutdown",
-				reason: "maintenance",
-				targetSessionFile: sessionManager.getSessionFile(),
-				maintenance: token,
-			});
-			this.beforeSessionInvalidate?.();
-			this.session.dispose({ maintenance: token });
-			const replacement = await this.createRuntime({
-				cwd: sessionManager.getCwd(),
-				agentDir: this.services.agentDir,
-				sessionManager,
-				sessionStartEvent: {
-					type: "session_start",
-					reason: "maintenance",
-					previousSessionFile,
-					maintenance: token,
-				},
-				projectTrustContext: options.projectTrustContextFactory?.(sessionManager.getCwd()),
-			});
-			replacementSession = replacement.session;
-			this.apply(replacement);
-			this.session.restoreMaintenanceQueue(queued);
-			await this.finishSessionReplacement(options.withSession);
-			return { cancelled: false };
-		} catch (error) {
-			// Do not let a partially bound replacement publish a quit/final outcome
-			// from stale in-memory state after the durable failure is written.
-			this.maintenanceFailed = true;
-			try {
-				replacementSession?.dispose();
-			} finally {
-				// No extension ctx, task manager, or UI survives in the failure owner.
-				recordMaintenanceFailure(sessionPath, token);
-			}
-			throw error;
+		if (!this.session.isIdle) throw new Error("session became active during maintenance cleanup");
+		const manager = this.session.sessionManager;
+		const expectedHeader = JSON.stringify(manager.getHeader());
+		// Validate before mutating the live indexes. No await from the final
+		// anchor check above through reload: in-process appends cannot interleave.
+		const validated = SessionManager.open(sessionPath, undefined, options.cwdOverride);
+		assertSessionCwdExists(validated, this.cwd);
+		if (JSON.stringify(validated.getHeader()) !== expectedHeader) {
+			throw new Error("maintenance refresh changed the session header");
 		}
+		if (refreshAnchor !== null && !validated.getEntry(refreshAnchor)) {
+			throw new Error("maintenance refresh anchor no longer exists");
+		}
+		manager.setSessionFile(sessionPath);
+		if (manager.getSessionId() !== token.sessionId || JSON.stringify(manager.getHeader()) !== expectedHeader) {
+			throw new Error("maintenance refresh changed the session identity/header");
+		}
+		if (refreshAnchor === null) manager.resetLeaf();
+		else manager.branch(refreshAnchor);
+		this.session.agent.state.messages = manager.buildSessionContext().messages;
+		this.session.notifySessionRefreshed();
+		if (options.withSession) await options.withSession(this.session.createReplacedSessionContext());
+		return { cancelled: false };
 	}
 
 	private startMaintenance(
@@ -644,10 +551,6 @@ export class AgentSessionRuntime {
 	}
 
 	async dispose(): Promise<void> {
-		if (this.maintenanceFailed) {
-			this.session.dispose();
-			return;
-		}
 		this.session.requestLifecycle("session quit");
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",

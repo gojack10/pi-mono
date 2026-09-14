@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, registerFauxProvider } from "@earendil-works/pi-ai/compat";
@@ -8,7 +8,6 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-	recordMaintenanceFailure,
 } from "../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
@@ -20,6 +19,7 @@ import type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 } from "../src/index.ts";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 type RecordedSessionEvent =
 	| SessionBeforeSwitchEvent
@@ -162,17 +162,17 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 			sessionId: session.sessionId,
 			sessionFile: session.sessionFile,
 			branchAnchor: sm.getLeafId(),
-			replacementAnchor: undefined as string | null | undefined,
 		};
+		let drainedAnchor: string | null;
 		const abort = vi.spyOn(session, "abort").mockImplementation(async () => {
-			sm.appendCustomEntry("maintenance_paused", {});
+			drainedAnchor = sm.appendCustomEntry("maintenance_paused", {});
 		});
 		const release = vi.fn(() => {
 			sm.appendCustomEntry("maintenance_resume", {});
 		});
 		const beforeReplace = vi.fn(() => {
-			expect(token.replacementAnchor).toBe(sm.getLeafId());
-			expect(token.replacementAnchor).not.toBe(token.branchAnchor);
+			expect(sm.getLeafId()).toBe(drainedAnchor);
+			expect(drainedAnchor).not.toBe(token.branchAnchor);
 			return { replace: false, afterNoReplace: release };
 		});
 		// Invalid public ownership is tested above; qualify the drain boundary separately.
@@ -277,10 +277,23 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		expect(runtimeHost.session).toBe(session);
 	});
 
-	it("enables public leaf replacement with a durable marker and a fresh usable runtime", async () => {
-		const { runtimeHost } = await createRuntimeHost(() => {});
+	it("refreshes the same live manager, extension runtime and TUI once, restoring the sealed leaf", async () => {
+		const lifecycle = vi.fn();
+		const { runtimeHost } = await createRuntimeHost((pi) => {
+			pi.on("session_start", lifecycle);
+			pi.on("session_shutdown", lifecycle);
+		});
+		lifecycle.mockClear();
 		const old = runtimeHost.session;
 		const sm = old.sessionManager;
+		const runner = old.extensionRunner;
+		const dispose = vi.spyOn(old, "dispose");
+		const create = vi.spyOn(runtimeHost as any, "createRuntime");
+		const rebuild = vi.fn();
+		const host = { isInitialized: true, footer: { invalidate() {} }, rebuildChatFromMessages: rebuild };
+		old.subscribe((event) => {
+			if (event.type === "session_refreshed") void (InteractiveMode.prototype as any).handleEvent.call(host, event);
+		});
 		sm.appendMessage(fauxAssistantMessage("saved locally"));
 		const token = {
 			maintenanceId: "enabled",
@@ -293,16 +306,38 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		token.branchAnchor = sm.getLeafId();
 		runtimeHost.setRebindSession((session) => session.bindExtensions({}));
 		const callback = vi.fn(async (ctx) => {
-			ctx.sessionManager.getEntries();
+			expect(sm.getLeafId()).toBe(token.branchAnchor);
+			expect(JSON.stringify(old.messages)).toContain("cleaned locally");
+			expect(ctx.sessionManager).toBe(sm);
 		});
 		await expect(
 			runtimeHost.switchSession(old.sessionFile!, {
-				maintenance: { token, beforeReplace: () => ({ replace: true }) },
+				maintenance: {
+					token,
+					beforeReplace: () => {
+						writeFileSync(
+							old.sessionFile!,
+							readFileSync(old.sessionFile!, "utf8").replace("saved locally", "cleaned locally"),
+						);
+						appendFileSync(
+							old.sessionFile!,
+							`${JSON.stringify({ type: "custom", id: "later", parentId: token.branchAnchor, timestamp: new Date().toISOString(), customType: "later", data: {} })}\n`,
+						);
+						return { replace: true };
+					},
+				},
 				withSession: callback,
 			}),
 		).resolves.toEqual({ cancelled: false });
 		expect(callback).toHaveBeenCalledOnce();
-		expect(runtimeHost.session).not.toBe(old);
+		expect(runtimeHost.session).toBe(old);
+		expect(old.sessionManager).toBe(sm);
+		expect(old.extensionRunner).toBe(runner);
+		expect(sm.getEntry("later")).toBeDefined();
+		expect(rebuild).toHaveBeenCalledOnce();
+		expect(lifecycle).not.toHaveBeenCalled();
+		expect(dispose).not.toHaveBeenCalled();
+		expect(create).not.toHaveBeenCalled();
 		expect(runtimeHost.session.sessionId).toBe(token.sessionId);
 		runtimeHost.session.sessionManager.appendCustomEntry("usable", {});
 		expect(runtimeHost.session.sessionManager.getLeafEntry()?.type).toBe("custom");
@@ -313,17 +348,80 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		).toBe(false);
 	});
 
-	it.each(["create", "bind", "session_start"])(
-		"records a durable nonfinal error after disposal on %s failure",
+	it("coalesces repeated concurrent maintenance against the same live owner", async () => {
+		const lifecycle = vi.fn();
+		const { runtimeHost } = await createRuntimeHost((pi) => {
+			pi.on("session_start", lifecycle);
+			pi.on("session_shutdown", lifecycle);
+		});
+		const session = runtimeHost.session;
+		const sm = session.sessionManager;
+		sm.appendMessage(fauxAssistantMessage("saved"));
+		lifecycle.mockClear();
+		const token = {
+			maintenanceId: "concurrent",
+			ownerEpoch: "owner",
+			sessionId: session.sessionId,
+			sessionFile: session.sessionFile,
+			branchAnchor: undefined as string | null | undefined,
+		};
+		sm.appendCustomEntry("task-outcome/v1", { kind: "maintenance_begin", maintenance: { ...token } });
+		token.branchAnchor = sm.getLeafId();
+		let release!: () => void;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let beforeCount = 0;
+		let afterNoReplaceCount = 0;
+		const options = {
+			maintenance: {
+				token,
+				beforeReplace: async () => {
+					beforeCount++;
+					await held;
+					return {
+						replace: false as const,
+						afterNoReplace: () => {
+							afterNoReplaceCount++;
+						},
+					};
+				},
+			},
+		};
+		const first = runtimeHost.switchSession(session.sessionFile!, options);
+		while (beforeCount === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+		const second = runtimeHost.switchSession(session.sessionFile!, options);
+		// async switchSession wraps the shared operation in distinct promises.
+		// The callback counts below prove the operation itself is coalesced.
+		release();
+		await expect(Promise.all([first, second])).resolves.toEqual([{ cancelled: false }, { cancelled: false }]);
+		expect(beforeCount).toBe(1);
+		expect(afterNoReplaceCount).toBe(1);
+		expect(lifecycle).not.toHaveBeenCalled();
+	});
+
+	it("restores an explicitly empty cursor on repeated refresh without a host", async () => {
+		const { runtimeHost } = await createRuntimeHost(() => {});
+		const session = runtimeHost.session;
+		const sm = session.sessionManager;
+		sm.appendMessage(fauxAssistantMessage("physically present"));
+		sm.resetLeaf();
+		const token = { maintenanceId: "empty", ownerEpoch: "owner", sessionId: session.sessionId, branchAnchor: null };
+		for (let i = 0; i < 2; i++) {
+			await (runtimeHost as any).runMaintenance(session.sessionFile!, { maintenance: { token } });
+			expect(runtimeHost.session).toBe(session);
+			expect(sm.getLeafId()).toBeNull();
+			expect(session.messages).toEqual([]);
+		}
+	});
+
+	it.each(["header", "anchor", "read"])(
+		"keeps the live runtime authoritative on %s refresh failure",
 		async (phase) => {
 			const quits = vi.fn();
 			const { runtimeHost } = await createRuntimeHost((pi) => {
 				pi.on("session_shutdown", (event) => {
 					if (event.reason === "quit") quits();
-				});
-				pi.on("session_start", (event) => {
-					if (phase === "session_start" && event.reason === "maintenance")
-						throw new Error("injected lifecycle failure");
 				});
 			});
 			const old = runtimeHost.session;
@@ -342,34 +440,44 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 				reportPath: "/tmp/report",
 			};
 			const disposed = vi.spyOn(old, "dispose");
-			const create =
-				phase === "create"
-					? vi.spyOn(runtimeHost as any, "createRuntime").mockRejectedValue(new Error("injected create failure"))
+			const original = readFileSync(file, "utf8");
+			const reload =
+				phase === "read"
+					? vi.spyOn(sm, "setSessionFile").mockImplementation(() => {
+							throw new Error("injected read failure");
+						})
 					: undefined;
-			runtimeHost.setRebindSession(async (session) => {
-				if (phase === "bind") throw new Error("injected bind failure");
-				await session.bindExtensions({});
-			});
-			await expect((runtimeHost as any).runMaintenance(file, { maintenance: { token } })).rejects.toThrow(
-				"injected",
-			);
-			expect(disposed).toHaveBeenCalled();
-			recordMaintenanceFailure(file, token);
-			const errors = SessionManager.open(file)
-				.getBranch()
-				.filter((entry) => entry.type === "custom" && entry.customType === "session-maintenance/v1");
-			expect(errors).toHaveLength(1);
-			expect((errors[0] as any).data).toMatchObject({
-				kind: "maintenance_error",
-				final: false,
-				maintenance: { maintenanceId: token.maintenanceId, ownerEpoch: "owner", phase: "error" },
-				jobId: "job",
-				attemptId: "attempt",
-			});
-			create?.mockRestore();
-			runtimeHost.setRebindSession(undefined);
-			await runtimeHost.dispose();
+			await expect(
+				(runtimeHost as any).runMaintenance(file, {
+					maintenance: {
+						token,
+						beforeReplace: () => {
+							const rows = original
+								.trim()
+								.split("\n")
+								.map((line) => JSON.parse(line));
+							if (phase === "header") rows[0].cwd = "/changed";
+							writeFileSync(
+								file,
+								rows
+									.filter((row) => phase !== "anchor" || row.id !== token.branchAnchor)
+									.map((row) => JSON.stringify(row))
+									.join("\n") + "\n",
+							);
+						},
+					},
+				}),
+			).rejects.toThrow();
+			expect(disposed).not.toHaveBeenCalled();
+			expect(runtimeHost.session).toBe(old);
+			expect(old.sessionManager).toBe(sm);
+			expect(sm.getLeafId()).toBe(token.branchAnchor);
 			expect(quits).not.toHaveBeenCalled();
+			reload?.mockRestore();
+			writeFileSync(file, original);
+			await expect((runtimeHost as any).runMaintenance(file, { maintenance: { token } })).resolves.toEqual({
+				cancelled: false,
+			});
 		},
 	);
 

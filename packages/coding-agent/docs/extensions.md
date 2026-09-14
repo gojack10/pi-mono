@@ -68,6 +68,8 @@ Automatic retries, recovery, compaction, or queued work can continue afterward.
 
 `ctx.abort()` records terminal extension cancellation. Context policies must first save their recoverable checkpoint, then call `ctx.abort({ kind: "context", reason, operationId? })`; `agent_end` and `agent_settled` expose that typed interruption metadata.
 
+`switchSession(currentFile, { maintenance: { token, beforeReplace }, withSession })` refreshes a qualified maintenance session in place. It validates ownership and the selected branch, drains the current run, rereads the transcript into the same runtime, and does not emit shutdown/start events or copy queues. Retained `SessionEntry` objects are stale after refresh and must be reread by ID.
+
 <a id="extensionapi-methods"></a>
 
 ## Choose an integration point

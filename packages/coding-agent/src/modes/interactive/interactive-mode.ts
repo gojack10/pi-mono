@@ -3346,6 +3346,9 @@ export class InteractiveMode {
 		this.footer.invalidate();
 
 		switch (event.type) {
+			case "session_refreshed":
+				this.rebuildChatFromMessages();
+				break;
 			case "agent_start":
 				this.pendingTools.clear();
 				// Restore main escape handler if retry handler is still active
