@@ -3,6 +3,7 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, MessageAdmissionResult } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
+import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 import { createHarness, getUserTexts, type Harness } from "./suite/harness.ts";
 
 const admitted = (result: MessageAdmissionResult): boolean => result.status === "admitted";
@@ -14,6 +15,51 @@ afterEach(() => {
 });
 
 describe("AgentSession model-turn admission", () => {
+	it("forwards typed context stops through the runner and preserves terminal cancellation precedence", async () => {
+		const harness = await createHarness({ extensionFactories: [() => {}] });
+		harnesses.push(harness);
+		const session = harness.session;
+		const ctx = session.extensionRunner!.createContext();
+		ctx.abort({ kind: "context", reason: "guard", operationId: "pause-1" });
+		expect(session.interruption).toMatchObject({
+			kind: "context",
+			source: "context",
+			reason: "guard",
+			operationId: "pause-1",
+		});
+		await session.waitForIdle();
+		ctx.abort();
+		expect(session.interruption).toMatchObject({ kind: "cancel", source: "extension" });
+		ctx.abort({ kind: "context", reason: "late guard" });
+		expect(session.interruption).toMatchObject({ kind: "cancel", source: "extension" });
+		await session.waitForIdle();
+	});
+
+	it("the real interactive binding and queue restoration retain context intent, but execution Escape wins", async () => {
+		const harness = await createHarness({ extensionFactories: [() => {}] });
+		harnesses.push(harness);
+		const session = harness.session;
+		const mode = Object.create(InteractiveMode.prototype);
+		Object.defineProperty(mode, "session", { value: session });
+		Object.assign(mode, {
+			createExtensionUIContext: () => ({}),
+			setupAutocompleteProvider: () => {},
+			setupExtensionShortcuts: () => {},
+			showLoadedResources: () => {},
+			showStartupNoticesIfNeeded: () => {},
+			clearAllQueues: () => ({ steering: [], followUp: [] }),
+			updatePendingMessagesDisplay: () => {},
+		});
+		await mode.bindCurrentSessionExtensions();
+		const ctx = session.extensionRunner!.createContext();
+		ctx.abort({ kind: "context", reason: "guard at 271925" });
+		expect(session.interruption).toMatchObject({ kind: "context", source: "context", reason: "guard at 271925" });
+		mode.restoreQueuedMessagesToEditor({ abort: true });
+		expect(session.interruption).toMatchObject({ kind: "cancel", source: "escape" });
+		ctx.abort({ kind: "context", reason: "late guard" });
+		expect(session.interruption).toMatchObject({ kind: "cancel", source: "escape" });
+	});
+
 	it("serializes concurrent idle producers and preserves admission order", async () => {
 		let releasePreflight!: () => void;
 		const preflightReleased = new Promise<void>((resolve) => {

@@ -91,6 +91,7 @@ import {
 	type ContextUsage,
 	type ExecuteToolOptions,
 	type ExtensionCommandContextActions,
+	type ExtensionContext,
 	type ExtensionErrorListener,
 	type ExtensionMode,
 	ExtensionRunner,
@@ -295,7 +296,7 @@ export interface ExtensionBindings {
 	uiContext?: ExtensionUIContext;
 	mode?: ExtensionMode;
 	commandContextActions?: ExtensionCommandContextActions;
-	abortHandler?: () => void;
+	abortHandler?: ExtensionContext["abort"];
 	shutdownHandler?: ShutdownHandler;
 	onError?: ExtensionErrorListener;
 }
@@ -655,7 +656,7 @@ export class AgentSession {
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
-	private _extensionAbortHandler?: () => void;
+	private _extensionAbortHandler?: ExtensionContext["abort"];
 	private _extensionShutdownHandler?: ShutdownHandler;
 	private _extensionErrorListener?: ExtensionErrorListener;
 	private _extensionErrorUnsubscriber?: () => void;
@@ -2873,9 +2874,57 @@ export class AgentSession {
 		};
 	}
 
+	/** Record extension stop intent before either host abort path executes. */
+	requestExtensionAbort(options?: Parameters<ExtensionContext["abort"]>[0]): void {
+		if (!options) {
+			this.requestCancellation("extension", "extension requested cancellation");
+			return;
+		}
+		if (this._interruption?.kind === "cancel") return;
+		this._interruption = { ...options, source: "context", runId: this._runId };
+	}
+
 	/** Record the non-destructive reason for a maintenance abort. */
 	requestMaintenance(token: SessionMaintenanceToken): void {
-		if (this._interruption?.kind === "cancel") return;
+		if (this._interruption?.kind === "cancel") {
+			// The task manager may durably acknowledge historical cancellation for a
+			// new idle session-only clean. Never carry that old run's stop into it.
+			const marker = this.sessionManager.getLeafEntry();
+			const data =
+				marker?.type === "custom" && marker.customType === "task-outcome/v1"
+					? (marker.data as {
+							kind?: string;
+							releasedCancellationEventId?: string;
+							maintenance?: SessionMaintenanceToken;
+						})
+					: undefined;
+			if (
+				!this.isIdle ||
+				this.pendingMessageCount > 0 ||
+				token.jobId ||
+				token.attemptId ||
+				token.reportPath ||
+				marker?.id !== token.branchAnchor ||
+				data?.kind !== "maintenance_begin" ||
+				!data.releasedCancellationEventId ||
+				data.maintenance?.maintenanceId !== token.maintenanceId ||
+				data.maintenance?.ownerEpoch !== token.ownerEpoch ||
+				data.maintenance.jobId ||
+				data.maintenance.attemptId ||
+				data.maintenance.reportPath ||
+				!this.sessionManager
+					.getBranch()
+					.some(
+						(entry) =>
+							entry.type === "custom" &&
+							entry.customType === "task-outcome/v1" &&
+							(entry.data as { eventId?: string; kind?: string })?.eventId ===
+								data.releasedCancellationEventId &&
+							(entry.data as { kind?: string }).kind === "cancellation_requested",
+					)
+			)
+				return;
+		}
 		this._interruption = {
 			kind: "maintenance",
 			source: "maintenance",
@@ -3881,12 +3930,12 @@ export class AgentSession {
 				isIdle: () => this.isIdle,
 				isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 				getSignal: () => this.agent.signal,
-				abort: () => {
+				abort: (options) => {
 					if (this._extensionAbortHandler) {
-						this._extensionAbortHandler();
+						this._extensionAbortHandler(options);
 						return;
 					}
-					this.requestCancellation("extension", "extension requested cancellation");
+					this.requestExtensionAbort(options);
 					void this.abort();
 				},
 				hasPendingMessages: () => this.pendingMessageCount > 0,

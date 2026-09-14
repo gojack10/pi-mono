@@ -186,6 +186,44 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		abort.mockRestore();
 	});
 
+	it("an idle session-only release marker acknowledges historical core cancellation, not a later cancellation", async () => {
+		const { runtimeHost } = await createRuntimeHost(() => {});
+		const session = runtimeHost.session;
+		await session.prompt("saved session");
+		const sm = session.sessionManager;
+		session.requestCancellation("task_cancel", "historical cancellation");
+		const cancellation = { version: 1, kind: "cancellation_requested", eventId: "cancel-old" };
+		sm.appendCustomEntry("task-outcome/v1", cancellation);
+		const token = {
+			maintenanceId: "session-only",
+			ownerEpoch: "new-owner",
+			sessionId: session.sessionId,
+			sessionFile: session.sessionFile,
+			branchAnchor: sm.getLeafId(),
+		};
+		const marker = {
+			kind: "maintenance_begin",
+			maintenance: { ...token },
+			releasedCancellationEventId: "cancel-old",
+		};
+		token.branchAnchor = sm.appendCustomEntry("task-outcome/v1", marker);
+		const beforeReplace = vi.fn(() => ({ replace: false as const }));
+		await expect(
+			runtimeHost.switchSession(session.sessionFile!, {
+				maintenance: { token, beforeReplace },
+			}),
+		).resolves.toEqual({ cancelled: false });
+		expect(beforeReplace).toHaveBeenCalledOnce();
+		expect(session.interruption?.kind).toBe("maintenance");
+		expect(
+			sm.getBranch().find((entry) => entry.type === "custom" && (entry.data as any)?.eventId === "cancel-old"),
+		).toMatchObject({ data: cancellation });
+		session.requestCancellation("task_cancel", "later cancellation");
+		sm.appendCustomEntry("task-outcome/v1", { ...cancellation, eventId: "cancel-new" });
+		session.requestMaintenance(token);
+		expect(session.interruption).toMatchObject({ kind: "cancel", reason: "later cancellation" });
+	});
+
 	it("cancellation while draining supersedes maintenance before cleanup", async () => {
 		const { runtimeHost } = await createRuntimeHost(() => {});
 		const session = runtimeHost.session;

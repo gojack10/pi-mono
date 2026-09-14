@@ -1952,9 +1952,9 @@ export class InteractiveMode {
 		await this.session.bindExtensions({
 			uiContext,
 			mode: "tui",
-			abortHandler: () => {
-				this.session.requestCancellation("extension", "extension requested cancellation");
-				this.restoreQueuedMessagesToEditor({ abort: true });
+			abortHandler: (options) => {
+				this.session.requestExtensionAbort(options);
+				this.restoreQueuedMessagesToEditor({ abort: options ?? true });
 			},
 			commandContextActions: {
 				waitForIdle: () => this.session.waitForIdle(),
@@ -2201,9 +2201,9 @@ export class InteractiveMode {
 			isIdle: () => this.session.isIdle,
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 			signal: this.session.agent.signal,
-			abort: () => {
-				this.session.requestCancellation("extension", "extension requested cancellation");
-				this.restoreQueuedMessagesToEditor({ abort: true });
+			abort: (options) => {
+				this.session.requestExtensionAbort(options);
+				this.restoreQueuedMessagesToEditor({ abort: options ?? true });
 			},
 			hasPendingMessages: () => this.session.pendingMessageCount > 0,
 			shutdown: () => {
@@ -4653,8 +4653,11 @@ export class InteractiveMode {
 		}
 	}
 
-	private restoreQueuedMessagesToEditor(options?: { abort?: boolean; currentText?: string }): number {
-		if (options?.abort) this.session.requestCancellation("escape", "execution interrupted by Escape");
+	private restoreQueuedMessagesToEditor(options?: {
+		abort?: boolean | Parameters<ExtensionContext["abort"]>[0];
+		currentText?: string;
+	}): number {
+		if (options?.abort === true) this.session.requestCancellation("escape", "execution interrupted by Escape");
 		const { steering, followUp } = this.clearAllQueues();
 		const allQueued = [...steering, ...followUp];
 		if (allQueued.length === 0) {

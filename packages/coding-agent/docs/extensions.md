@@ -66,6 +66,8 @@ Automatic retries, recovery, compaction, or queued work can continue afterward.
 `agent_before_settle` is the final actionable boundary: it can append entries and request one continuation.
 `agent_settled` is final and notification-only; use it when an integration needs to know Pi will not continue automatically.
 
+`ctx.abort()` records terminal extension cancellation. Context policies must first save their recoverable checkpoint, then call `ctx.abort({ kind: "context", reason, operationId? })`; `agent_end` and `agent_settled` expose that typed interruption metadata.
+
 <a id="extensionapi-methods"></a>
 
 ## Choose an integration point

@@ -353,7 +353,7 @@ export interface ExtensionContext {
 	/** The current abort signal, or undefined when the agent is not streaming. */
 	signal: AbortSignal | undefined;
 	/** Abort the current agent operation */
-	abort(): void;
+	abort(options?: { kind: "context"; reason: string; operationId?: string }): void;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
 	/** Gracefully shutdown pi and exit. Available in all contexts. */
@@ -976,8 +976,8 @@ export interface AgentStartEvent {
 	type: "agent_start";
 }
 
-export type AgentInterruptionKind = "cancel" | "maintenance" | "lifecycle";
-export type AgentInterruptionSource = "escape" | "task_cancel" | "extension" | "maintenance" | "lifecycle";
+export type AgentInterruptionKind = "cancel" | "context" | "maintenance" | "lifecycle";
+export type AgentInterruptionSource = "escape" | "task_cancel" | "extension" | "context" | "maintenance" | "lifecycle";
 
 export interface AgentInterruption {
 	kind: AgentInterruptionKind;
@@ -2264,7 +2264,7 @@ export interface ExtensionContextActions {
 	isIdle: () => boolean;
 	isProjectTrusted: () => boolean;
 	getSignal: () => AbortSignal | undefined;
-	abort: () => void;
+	abort: ExtensionContext["abort"];
 	hasPendingMessages: () => boolean;
 	shutdown: () => void;
 	getContextUsage: () => ContextUsage | undefined;
