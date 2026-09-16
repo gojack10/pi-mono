@@ -1998,6 +1998,7 @@ export class AgentSession {
 		this._runId += 1;
 		this._interruption = undefined;
 		this._isAgentRunActive = true;
+		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 		try {
 			await this.agent.prompt(messages);
 			while (!this._agentRunAbortRequested) {
@@ -2014,6 +2015,8 @@ export class AgentSession {
 			if (this._agentRunAbortRequested) this._finishCancelledRetry();
 			this._failedResponse = undefined;
 			this._runSystemPromptOptions = undefined;
+			this._systemPromptOverride = undefined;
+			this.agent.state.systemPrompt = this._baseSystemPrompt;
 			this._flushPendingBashMessages();
 			this._flushPendingCustomMessages();
 			await this._emitAgentSettled();

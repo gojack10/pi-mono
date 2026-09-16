@@ -272,4 +272,66 @@ describe("AgentSession model-turn admission", () => {
 		).toBe(true);
 		expect(getUserTexts(harness)).toEqual(["normal"]);
 	});
+
+	it("initializes custom runs with the base prompt and preserves it across tool turns", async () => {
+		let extensionApi: ExtensionAPI | undefined;
+		const ordinaryPromptMarker = "ordinary prompt override";
+		const stepTool: AgentTool = {
+			name: "step",
+			label: "Step",
+			description: "Run one test step",
+			parameters: Type.Object({}),
+			execute: async () => ({ content: [{ type: "text", text: "stepped" }], details: {} }),
+		};
+		const harness = await createHarness({
+			tools: [stepTool],
+			extensionFactories: [
+				(pi) => {
+					extensionApi = pi;
+					pi.on("before_agent_start", (event) => ({
+						systemPrompt: `${event.systemPrompt}\n\n${ordinaryPromptMarker}`,
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		const providerSystemPrompts: string[] = [];
+		harness.setResponses([
+			(context) => {
+				providerSystemPrompts.push(context.systemPrompt ?? "");
+				return fauxAssistantMessage(fauxToolCall("step", {}), { stopReason: "toolUse" });
+			},
+			(context) => {
+				providerSystemPrompts.push(context.systemPrompt ?? "");
+				return fauxAssistantMessage("ordinary done");
+			},
+			(context) => {
+				providerSystemPrompts.push(context.systemPrompt ?? "");
+				return fauxAssistantMessage(fauxToolCall("step", {}), { stopReason: "toolUse" });
+			},
+			(context) => {
+				providerSystemPrompts.push(context.systemPrompt ?? "");
+				return fauxAssistantMessage("custom done");
+			},
+		]);
+
+		await harness.session.prompt("ordinary");
+		const basePrompt = harness.session.systemPrompt;
+		expect(basePrompt).not.toContain(ordinaryPromptMarker);
+		await expect(
+			extensionApi!.sendMessage(
+				{ customType: "admission-test", content: "custom", display: false, details: {} },
+				{ triggerTurn: true, admissionKey: "custom:prompt" },
+			),
+		).resolves.toMatchObject({ status: "admitted" });
+		await harness.session.waitForIdle();
+
+		expect(providerSystemPrompts).toHaveLength(4);
+		expect(providerSystemPrompts[0]).toContain(ordinaryPromptMarker);
+		expect(providerSystemPrompts[1]).toContain(ordinaryPromptMarker);
+		expect(providerSystemPrompts[2]).toBe(basePrompt);
+		expect(providerSystemPrompts[3]).toBe(basePrompt);
+		expect(harness.session.systemPrompt).toBe(basePrompt);
+	});
 });
