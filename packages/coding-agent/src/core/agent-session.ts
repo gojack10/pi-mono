@@ -1987,6 +1987,36 @@ export class AgentSession {
 	// Prompting
 	// =========================================================================
 
+	private async _prepareAgentStart(
+		text: string,
+		images: ImageContent[] | undefined,
+		assertAdmissionCurrent: () => void,
+	) {
+		const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
+		const result = await this._extensionRunner.emitBeforeAgentStart(text, images, this._baseSystemPromptOptions);
+		assertAdmissionCurrent();
+
+		const handlerEditedTools =
+			result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
+			result.systemPromptOptions.selectedTools.some((name, index) => name !== selectedToolsBefore[index]);
+		if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
+
+		this._runSystemPromptOptions = result.systemPromptOptions;
+		return {
+			messages: result.messages.map(
+				(msg): CustomMessage => ({
+					role: "custom",
+					customType: msg.customType,
+					content: msg.content ?? [],
+					display: msg.display,
+					details: msg.details,
+					timestamp: Date.now(),
+				}),
+			),
+			updateMessage: this._preparePromptAndToolLoadout(result.systemPromptOptions),
+		};
+	}
+
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
 		this._agentRunAbortRequested = false;
 		// Compaction before the prompt may have scheduled a retry; the new prompt replaces it.
@@ -2014,7 +2044,6 @@ export class AgentSession {
 			if (this._agentRunAbortRequested) this._finishCancelledRetry();
 			this._failedResponse = undefined;
 			this._runSystemPromptOptions = undefined;
-			this._systemPromptOverride = undefined;
 			this._flushPendingBashMessages();
 			this._flushPendingCustomMessages();
 			await this._emitAgentSettled();
@@ -2273,25 +2302,13 @@ export class AgentSession {
 					}
 					assertAdmissionCurrent();
 
-					// Emit before_agent_start before normalizing images so extension-driven model
-					// selection determines the resize profile used for the request and history.
-					const selectedToolsBefore = this._baseSystemPromptOptions.selectedTools;
-					const result = await this._extensionRunner.emitBeforeAgentStart(
+					// Run extension preparation before image normalization so model changes select
+					// the correct resize profile for both the request and persisted history.
+					const prepared = await this._prepareAgentStart(
 						expandedText,
 						currentImages,
-						this._baseSystemPromptOptions,
+						assertAdmissionCurrent,
 					);
-					assertAdmissionCurrent();
-					// Handlers may edit event.systemPromptOptions.selectedTools or call setActiveTools(),
-					// which updates the live loadout instead. An explicit edit wins; otherwise the live
-					// loadout is authoritative, so a setActiveTools() call is not undone here.
-					const handlerEditedTools =
-						result.systemPromptOptions.selectedTools.length !== selectedToolsBefore.length ||
-						result.systemPromptOptions.selectedTools.some(
-							(name, index) => name !== selectedToolsBefore[index],
-						);
-					if (!handlerEditedTools) result.systemPromptOptions.selectedTools = this.getActiveToolNames();
-
 					const normalized = await this._normalizePromptImages(currentImages);
 					assertAdmissionCurrent();
 					const userText =
@@ -2304,20 +2321,8 @@ export class AgentSession {
 
 					for (const msg of this._pendingNextTurnMessages) messages.push(msg);
 					this._pendingNextTurnMessages = [];
-
-					for (const msg of result.messages) {
-						messages.push({
-							role: "custom",
-							customType: msg.customType,
-							content: msg.content ?? [],
-							display: msg.display,
-							details: msg.details,
-							timestamp: Date.now(),
-						});
-					}
-					const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
-					this._runSystemPromptOptions = result.systemPromptOptions;
-					if (updateMessage) messages.unshift(updateMessage);
+					messages.push(...prepared.messages);
+					if (prepared.updateMessage) messages.unshift(prepared.updateMessage);
 
 					assertAdmissionCurrent();
 					reportPreflight("started");
@@ -2572,11 +2577,24 @@ export class AgentSession {
 					return { status: "admitted", delivery: options?.deliverAs ?? "steer", admissionKey };
 				}
 				if (options?.triggerTurn) {
+					// Custom-started runs need the same fresh extension instructions as user runs.
+					const messages: AgentMessage[] = [appMessage];
+					const images =
+						typeof appMessage.content === "string"
+							? []
+							: appMessage.content.filter((part): part is ImageContent => part.type === "image");
+					const prepared = await this._prepareAgentStart(
+						contentText(appMessage.content),
+						images.length > 0 ? images : undefined,
+						assertAdmissionCurrent,
+					);
+					messages.push(...prepared.messages);
+					if (prepared.updateMessage) messages.unshift(prepared.updateMessage);
 					assertAdmissionCurrent();
 					if (this._isEmittingAgentSettled) {
-						this._deferredSettledActions.push(async () => await this._runAgentPrompt(appMessage));
+						this._deferredSettledActions.push(async () => await this._runAgentPrompt(messages));
 					} else {
-						completion = this._runAgentPrompt(appMessage);
+						completion = this._runAgentPrompt(messages);
 					}
 					return { status: "admitted", delivery: "turn", admissionKey };
 				}

@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { type Context, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, MessageAdmissionResult } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,6 +15,140 @@ afterEach(() => {
 });
 
 describe("AgentSession model-turn admission", () => {
+	it.each([false, true])(
+		"initializes custom-run instructions and preserves them through completion (warmup=%s)",
+		async (warmup) => {
+			let enabled = true;
+			const prompts: string[] = [];
+			const hookPrompts: string[] = [];
+			const contexts: Context[] = [];
+			let extensionApi: ExtensionAPI | undefined;
+			const harness = await createHarness({
+				extensionFactories: [
+					(pi) => {
+						extensionApi = pi;
+						pi.on("before_agent_start", (event) => {
+							hookPrompts.push(event.prompt);
+							if (event.prompt === "start goal") {
+								expect(event.images).toEqual(
+									warmup ? [{ type: "image", data: "test", mimeType: "image/png" }] : undefined,
+								);
+							}
+							if (!enabled) return;
+							return {
+								systemPrompt: `${event.systemPrompt}\nPONYTAIL TEST INSTRUCTIONS`,
+								message: { customType: "run-context", content: "injected once", display: false },
+							};
+						});
+						pi.registerTool({
+							name: "finish_goal",
+							label: "finish_goal",
+							description: "Complete the goal and queue its completion event",
+							parameters: Type.Object({}),
+							async execute() {
+								await pi.sendMessage({ customType: "goal-event", content: "goal complete", display: true });
+								return { content: [{ type: "text", text: "complete" }], details: {} };
+							},
+						});
+					},
+				],
+			});
+			harnesses.push(harness);
+			const base = harness.session.systemPrompt;
+			const capture = (context: Context) => {
+				prompts.push(context.systemPrompt ?? "");
+				contexts.push({ ...context, messages: structuredClone(context.messages), tools: context.tools?.slice() });
+				return fauxAssistantMessage("done");
+			};
+			if (warmup) {
+				harness.setResponses([capture]);
+				await harness.session.prompt("ordinary warmup");
+			}
+			harness.setResponses([
+				(context) => {
+					capture(context);
+					return fauxAssistantMessage(fauxToolCall("finish_goal", {}), { stopReason: "toolUse" });
+				},
+				capture,
+			]);
+			await harness.session.sendCustomMessage(
+				{
+					customType: "goal-event",
+					content: warmup
+						? [
+								{ type: "text", text: "start goal" },
+								{ type: "image", data: "test", mimeType: "image/png" },
+							]
+						: "start goal",
+					display: true,
+				},
+				{ triggerTurn: true },
+			);
+			expect(hookPrompts).toEqual(warmup ? ["ordinary warmup", "start goal"] : ["start goal"]);
+			expect(prompts).toEqual(Array(warmup ? 3 : 2).fill(`${base}\nPONYTAIL TEST INSTRUCTIONS`));
+			const last = contexts.at(-1)!;
+			expect(last.messages.at(-1)).toMatchObject({
+				role: "user",
+				content: [{ type: "text", text: "goal complete" }],
+			});
+			expect(last.tools).toEqual(contexts.at(-2)!.tools);
+			expect(
+				harness.session.messages.filter((m) => m.role === "custom" && m.customType === "run-context"),
+			).toHaveLength(warmup ? 2 : 1);
+
+			// Reinitialize from extension state, rather than carrying or duplicating a stale override.
+			enabled = false;
+			harness.setResponses([capture]);
+			await extensionApi!.sendMessage(
+				{ customType: "goal-event", content: "another goal", display: true },
+				{ triggerTurn: true },
+			);
+			await harness.session.waitForIdle();
+			expect(prompts.at(-1)).toBe(base);
+			harness.setResponses([capture]);
+			enabled = true;
+			await harness.session.prompt("ordinary after goal");
+			expect(prompts.at(-1)).toBe(`${base}\nPONYTAIL TEST INSTRUCTIONS`);
+		},
+	);
+
+	it("rechecks custom admission after asynchronous before_agent_start hooks", async () => {
+		let release!: () => void;
+		let entered!: () => void;
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const started = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		let valid = true;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", async (event) => {
+						entered();
+						await blocked;
+						return { systemPrompt: `${event.systemPrompt}\nstale instructions` };
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const base = harness.session.systemPrompt;
+		const pending = harness.session.sendCustomMessage(
+			{ customType: "test", content: "custom", display: false },
+			{ triggerTurn: true, admissionGuard: () => valid },
+		);
+		const rejected = expect(pending).rejects.toThrow("notification became final");
+		await started;
+		valid = false;
+		release();
+		await rejected;
+		expect(harness.session.messages).toEqual([]);
+		expect(harness.session.systemPrompt).toBe(base);
+		expect(harness.session.isIdle).toBe(true);
+	});
+
 	it("forwards typed context stops through the runner and preserves terminal cancellation precedence", async () => {
 		const harness = await createHarness({ extensionFactories: [() => {}] });
 		harnesses.push(harness);

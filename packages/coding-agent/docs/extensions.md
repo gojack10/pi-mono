@@ -59,7 +59,7 @@ Do not start processes, sockets, watchers, or timers in the factory because some
 Start long-lived resources from `session_start` or from the command or tool that needs them.
 Close session-scoped resources from an idempotent `session_shutdown` handler.
 
-A run proceeds from input and `before_agent_start`, through model, message, and tool events, to `agent_end`.
+A run proceeds from input and `before_agent_start`, through model, message, and tool events, to `agent_end`. `before_agent_start` fires for a user prompt or an idle `sendMessage(..., { triggerTurn: true })`; custom-started runs supply prompt text and images from the custom message. Messages queued into an active run do not fire it again.
 Automatic retries, recovery, compaction, or queued work can continue afterward.
 <a id="agent_start--agent_end--agent_before_settle--agent_settled"></a>
 
