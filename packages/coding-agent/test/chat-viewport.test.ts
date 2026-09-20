@@ -22,5 +22,6 @@ describe("chat viewport", () => {
 
 		expect(automatic.transcript.scrollbar).toBe("auto");
 		expect(hidden.transcript.scrollbar).toBe("hidden");
+		expect(automatic.root).toBe(automatic.transcript);
 	});
 });

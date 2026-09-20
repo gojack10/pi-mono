@@ -24,6 +24,7 @@ export function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScr
 	if (options.tuiMode === "fullscreen") {
 		const styleSearchMatch = (text: string) => theme.bg("searchMatchBg", theme.fg("searchMatchText", text));
 		return new TuiAltScreen(terminal, options.showHardwareCursor, options.logDirectory, {
+			wheelScrollLines: 3,
 			searchMatchStyle: (text) => theme.underline(styleSearchMatch(text)),
 			searchCurrentMatchStyle: (text) => theme.bold(theme.inverse(styleSearchMatch(text))),
 			searchNavigationButtonStyle: (text, hovered) => (hovered ? theme.underline(text) : text),

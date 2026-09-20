@@ -18,9 +18,18 @@ export interface ChatViewport {
 	readonly transcript: ScrollView;
 }
 
-/** Shared fullscreen transcript and fixed input-dock layout. */
+/** Shared fullscreen whole-document layout. */
 export function createChatViewport(options: ChatViewportOptions): ChatViewport {
-	const transcript = new ScrollView(options.document, {
+	const document = new VStack([
+		options.document,
+		options.pendingMessages,
+		options.status,
+		...(options.widgetsAbove === undefined ? [] : [options.widgetsAbove]),
+		{ component: options.editor, minSize: 3 },
+		...(options.widgetsBelow === undefined ? [] : [options.widgetsBelow]),
+		{ component: options.footer, minSize: 1 },
+	]);
+	const transcript = new ScrollView(document, {
 		follow: "end",
 		primary: true,
 		overscroll: "chain",
@@ -28,19 +37,5 @@ export function createChatViewport(options: ChatViewportOptions): ChatViewport {
 		...(options.scrollbarTrackStyle === undefined ? {} : { scrollbarTrackStyle: options.scrollbarTrackStyle }),
 		...(options.scrollbarThumbStyle === undefined ? {} : { scrollbarThumbStyle: options.scrollbarThumbStyle }),
 	});
-	const dock = new VStack([
-		{ component: options.pendingMessages, shrink: 1, minSize: 0 },
-		{ component: options.status, shrink: 1, minSize: 0 },
-		...(options.widgetsAbove === undefined ? [] : [{ component: options.widgetsAbove, shrink: 1, minSize: 0 }]),
-		{ component: options.editor, shrink: 1, minSize: 3 },
-		...(options.widgetsBelow === undefined ? [] : [{ component: options.widgetsBelow, shrink: 1, minSize: 0 }]),
-		{ component: options.footer, shrink: 1, minSize: 0 },
-	]);
-	return {
-		transcript,
-		root: new VStack([
-			{ component: transcript, basis: 0, grow: 1, shrink: 1, minSize: 1 },
-			{ component: dock, basis: "auto", grow: 0, shrink: 1, minSize: 1 },
-		]),
-	};
+	return { transcript, root: transcript };
 }
