@@ -195,6 +195,7 @@ describe("regression #2860: replaced session callbacks", () => {
 		expect(events).toEqual(["start:1"]);
 
 		await runtime.session.prompt("/repro");
+		await runtime.session.waitForIdle();
 
 		expect(events).toEqual(["start:1", "shutdown:1", "start:2", "with:1"]);
 		expect(replacementSessionFile).toBeDefined();
@@ -232,6 +233,7 @@ describe("regression #2860: replaced session callbacks", () => {
 
 		await runtime.session.prompt("seed");
 		await runtime.session.prompt("/fork-it");
+		await runtime.session.waitForIdle();
 
 		expect(
 			runtime.session.messages
@@ -267,6 +269,7 @@ describe("regression #2860: replaced session callbacks", () => {
 		await runtime.switchSession(originalSessionPath!);
 
 		await runtime.session.prompt("/switch-it");
+		await runtime.session.waitForIdle();
 
 		expect(runtime.session.sessionFile).toBe(targetSessionPath);
 		expect(

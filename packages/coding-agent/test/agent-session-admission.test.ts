@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { type Context, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { type Context, fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, MessageAdmissionResult } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
@@ -56,7 +56,8 @@ describe("AgentSession model-turn admission", () => {
 			harnesses.push(harness);
 			const base = harness.session.systemPrompt;
 			const capture = (context: Context) => {
-				prompts.push(context.systemPrompt ?? "");
+				// v0.87+ carries the system prompt as the leading transcript message.
+				prompts.push(getCurrentSystemPrompt(context.messages));
 				contexts.push({ ...context, messages: structuredClone(context.messages), tools: context.tools?.slice() });
 				return fauxAssistantMessage("done");
 			};

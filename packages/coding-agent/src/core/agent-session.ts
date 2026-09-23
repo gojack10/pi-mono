@@ -2304,11 +2304,7 @@ export class AgentSession {
 
 					// Run extension preparation before image normalization so model changes select
 					// the correct resize profile for both the request and persisted history.
-					const prepared = await this._prepareAgentStart(
-						expandedText,
-						currentImages,
-						assertAdmissionCurrent,
-					);
+					const prepared = await this._prepareAgentStart(expandedText, currentImages, assertAdmissionCurrent);
 					const normalized = await this._normalizePromptImages(currentImages);
 					assertAdmissionCurrent();
 					const userText =

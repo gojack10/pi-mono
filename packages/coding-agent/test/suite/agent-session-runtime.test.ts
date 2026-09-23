@@ -595,6 +595,7 @@ describe("AgentSessionRuntime characterization", () => {
 					services,
 					sessionManager,
 					sessionStartEvent,
+					model: faux.getModel(),
 				})),
 				services,
 				diagnostics: services.diagnostics,
@@ -617,7 +618,7 @@ describe("AgentSessionRuntime characterization", () => {
 		expect(realpathSync(runtime.cwd)).toBe(realpathSync(secondDir));
 	});
 
-	it("restores model and thinking state from the destination session", async () => {
+	it("does not implicitly restore model and thinking state from the destination session", async () => {
 		const { runtime, faux, tempDir } = await createRuntimeForTest(() => {}, {
 			bootstrapModel: false,
 			bootstrapThinkingLevel: false,
@@ -681,14 +682,14 @@ describe("AgentSessionRuntime characterization", () => {
 		cleanups.push(async () => {
 			await otherRuntime.dispose();
 		});
-		await otherRuntime.session.setModel(faux.getModel("faux-2")!);
-		otherRuntime.session.setThinkingLevel("off");
+		await otherRuntime.session.setModel(faux.getModel("faux-1")!);
+		otherRuntime.session.setThinkingLevel("high");
 		await otherRuntime.session.prompt("hello");
 		const targetSessionFile = otherRuntime.session.sessionFile!;
 
 		await runtime.switchSession(targetSessionFile);
 
-		expect(runtime.session.model?.id).toBe("faux-2");
-		expect(runtime.session.thinkingLevel).toBe("off");
+		expect(runtime.session.model?.id).toBe("unknown");
+		expect(runtime.session.thinkingLevel).not.toBe("high");
 	});
 });

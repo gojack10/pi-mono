@@ -230,11 +230,12 @@ describe("InteractiveMode compaction events", () => {
 
 	// Regression test for #9340.
 	test("routes interactive response aborts through AgentSession", () => {
+		const requestCancellation = vi.fn();
 		const abort = vi.fn(async () => {});
 		const ui = {
 			clearAllQueues: () => ({ steering: [], followUp: [] }),
 			updatePendingMessagesDisplay: vi.fn(),
-			session: { abort },
+			session: { requestCancellation, abort },
 		};
 		const restoreQueuedMessagesToEditor = Reflect.get(InteractiveMode.prototype, "restoreQueuedMessagesToEditor") as (
 			this: typeof ui,
@@ -243,6 +244,7 @@ describe("InteractiveMode compaction events", () => {
 
 		restoreQueuedMessagesToEditor.call(ui, { abort: true });
 
+		expect(requestCancellation).toHaveBeenCalledWith("escape", "execution interrupted by Escape");
 		expect(abort).toHaveBeenCalledOnce();
 	});
 

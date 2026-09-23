@@ -64,7 +64,7 @@ describe("compaction model overrides", () => {
 
 	it("merges project model overrides per field before resolving fallbacks", async () => {
 		const storage = new InMemorySettingsStorage();
-		storage.withLock("global", () =>
+		storage.withLock("global", "legacy", () =>
 			JSON.stringify({
 				compaction: {
 					reserveTokens: 8192,
@@ -75,7 +75,7 @@ describe("compaction model overrides", () => {
 				},
 			}),
 		);
-		storage.withLock("project", () =>
+		storage.withLock("project", "legacy", () =>
 			JSON.stringify({
 				compaction: { reserveTokens: 1024, modelOverrides: { [modelKey]: { keepRecentTokens: 2000 } } },
 			}),
@@ -99,7 +99,7 @@ describe("compaction model overrides", () => {
 
 	it("keeps enabled global and preserves overrides when saving the toggle", async () => {
 		const storage = new InMemorySettingsStorage();
-		storage.withLock("global", () =>
+		storage.withLock("global", "legacy", () =>
 			JSON.stringify({
 				compaction: { modelOverrides: { [modelKey]: { enabled: false, reserveTokens: 400000 } } },
 			}),
@@ -117,7 +117,7 @@ describe("compaction model overrides", () => {
 			"reports invalid token values: %j",
 			(value) => {
 				const storage = new InMemorySettingsStorage();
-				storage.withLock("global", () =>
+				storage.withLock("global", "legacy", () =>
 					JSON.stringify({
 						compaction: { modelOverrides: { [modelKey]: { [field]: value } } },
 					}),
@@ -145,7 +145,7 @@ describe("compaction model overrides", () => {
 			"reports invalid values even when a valid model override exists: %j",
 			(value) => {
 				const storage = new InMemorySettingsStorage();
-				storage.withLock("global", () =>
+				storage.withLock("global", "legacy", () =>
 					JSON.stringify({
 						compaction: {
 							[field]: value,
@@ -169,7 +169,9 @@ describe("compaction model overrides", () => {
 
 	it.each([null, false, 42, "invalid", []])("reports malformed model entries: %j", (entry) => {
 		const storage = new InMemorySettingsStorage();
-		storage.withLock("global", () => JSON.stringify({ compaction: { modelOverrides: { [modelKey]: entry } } }));
+		storage.withLock("global", "legacy", () =>
+			JSON.stringify({ compaction: { modelOverrides: { [modelKey]: entry } } }),
+		);
 		expect(() => SettingsManager.fromStorage(storage).getCompactionSettings(model)).toThrow(
 			`Invalid compaction.modelOverrides["${modelKey}"] setting: ${String(entry)}. Expected an object.`,
 		);

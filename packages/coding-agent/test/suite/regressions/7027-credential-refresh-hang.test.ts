@@ -1,7 +1,6 @@
 import type { Api, Model, Provider } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../../../src/core/auth-storage.ts";
-import { defaultModelPerProvider } from "../../../src/core/model-resolver.ts";
 import { ModelRuntime } from "../../../src/core/model-runtime.ts";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { createHarness, type Harness } from "../harness.ts";
@@ -166,7 +165,7 @@ describe("post-login model discovery", () => {
 		};
 		await complete.call(context, "radius", "Radius", "oauth", unknownModel);
 		expect(context.showStatus).toHaveBeenCalledWith(expect.stringContaining("Credentials saved"));
-		expect(context.showError).not.toHaveBeenCalled();
+		expect(context.showError).toHaveBeenCalledWith(expect.stringContaining("no models are available"));
 		expect(setModel).not.toHaveBeenCalled();
 
 		return {
@@ -184,17 +183,14 @@ describe("post-login model discovery", () => {
 	it.each([
 		{ models: ["fast", "balanced"], selected: "balanced" },
 		{ models: ["fast", "powerful"], selected: "fast" },
-	])("selects $selected from the refreshed catalog $models", async ({ models, selected }) => {
-		expect(defaultModelPerProvider.radius).toBe("balanced");
+	])("does not select $selected from the refreshed catalog $models", async ({ models }) => {
 		const login = await startLogin();
 		await login.discover(models);
-		expect(login.setModel).toHaveBeenCalledWith(expect.objectContaining({ provider: "radius", id: selected }), {
-			persist: true,
-		});
-		expect(login.showError).not.toHaveBeenCalled();
+		expect(login.setModel).not.toHaveBeenCalled();
+		expect(login.showError).toHaveBeenCalledWith(expect.stringContaining("no models are available"));
 	});
 
-	it("reports an empty catalog only after refresh", async () => {
+	it("reports an empty catalog without selecting a default", async () => {
 		const login = await startLogin();
 		await login.discover([]);
 		expect(login.setModel).not.toHaveBeenCalled();
@@ -206,7 +202,7 @@ describe("post-login model discovery", () => {
 		login.currentModel.mockReturnValue(harness!.getModel());
 		await login.discover(["fast", "balanced"]);
 		expect(login.setModel).not.toHaveBeenCalled();
-		expect(login.showError).not.toHaveBeenCalled();
+		expect(login.showError).toHaveBeenCalledWith(expect.stringContaining("no models are available"));
 	});
 
 	it("bounds refresh to 15 seconds", async () => {

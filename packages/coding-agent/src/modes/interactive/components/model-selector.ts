@@ -159,13 +159,12 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const refreshed = this.modelRuntime.getModel(scoped.model.provider, scoped.model.id);
 			return refreshed ? { ...scoped, model: refreshed } : scoped;
 		});
-		this.scopedModelItems = this.sortModels(
-			this.scopedModels.map((scoped) => ({
-				provider: scoped.model.provider,
-				id: scoped.model.id,
-				model: scoped.model,
-			})),
-		);
+		const scopedModelItems = this.scopedModels.map((scoped) => ({
+			provider: scoped.model.provider,
+			id: scoped.model.id,
+			model: scoped.model,
+		}));
+		this.scopedModelItems = this.modelOrder ? this.sortModels(scopedModelItems) : scopedModelItems;
 		this.activeModels = this.scope === "scoped" ? this.scopedModelItems : this.allModels;
 		this.filteredModels = this.activeModels;
 		const currentIndex = this.filteredModels.findIndex((item) => modelsAreEqual(this.currentModel, item.model));
