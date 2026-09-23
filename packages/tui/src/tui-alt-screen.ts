@@ -779,7 +779,9 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			return { consume: true };
 		}
 		if (keybindings.matches(data, "tui.altScreen.bottom")) {
-			if (!isRelease) this.scrollToBottom();
+			if (isRelease) return { consume: true };
+			if (this.getPrimaryScrollView().isFollowingEnd) return undefined;
+			this.scrollToBottom();
 			return { consume: true };
 		}
 		return undefined;

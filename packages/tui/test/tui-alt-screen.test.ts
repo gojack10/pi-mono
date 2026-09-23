@@ -898,6 +898,43 @@ describe("TuiAltScreen", () => {
 		}
 	});
 
+	it("returns the bottom shortcut to the focused component after jumping to the bottom", async () => {
+		const originalKeybindings = getKeybindings();
+		const terminal = new VirtualTerminal(20, 6);
+		const tui = new TuiAltScreen(terminal);
+		const editorInputs: string[] = [];
+		const editor = {
+			focused: false,
+			render: () => ["editor"],
+			invalidate: () => {},
+			handleInput: (data: string) => editorInputs.push(data),
+		};
+		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS, { "tui.altScreen.bottom": "down" }));
+		try {
+			tui.setLayoutRoot(
+				new ScrollView(new Text(Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n"), 0, 0), {
+					follow: "end",
+					primary: true,
+				}),
+			);
+			tui.setFocus(editor);
+			tui.start();
+			await terminal.waitForRender();
+			tui.scrollBy(-3);
+
+			terminal.sendInput("\x1b[B");
+			await terminal.waitForRender();
+			assert.strictEqual(tui.isFollowingOutput, true);
+			assert.deepStrictEqual(editorInputs, []);
+
+			terminal.sendInput("\x1b[B");
+			assert.deepStrictEqual(editorInputs, ["\x1b[B"]);
+		} finally {
+			tui.stop();
+			setKeybindings(originalKeybindings);
+		}
+	});
+
 	it("routes Ctrl-modified viewport navigation to the focused component", async () => {
 		const terminal = new VirtualTerminal(20, 6);
 		const tui = new TuiAltScreen(terminal);
