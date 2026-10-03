@@ -459,10 +459,10 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 							if (phase === "header") rows[0].cwd = "/changed";
 							writeFileSync(
 								file,
-								rows
+								`${rows
 									.filter((row) => phase !== "anchor" || row.id !== token.branchAnchor)
 									.map((row) => JSON.stringify(row))
-									.join("\n") + "\n",
+									.join("\n")}\n`,
 							);
 						},
 					},

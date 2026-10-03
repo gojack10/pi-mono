@@ -2219,118 +2219,116 @@ export class AgentSession {
 					}
 				};
 				let messages: AgentMessage[] | undefined;
-				try {
-					if (this._compactionAbortController !== undefined) {
+				if (this._compactionAbortController !== undefined) {
+					throw new Error(
+						"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
+					);
+				}
+
+				// Emit input event for extension interception (before skill/template expansion)
+				const processedInput = await this._runInputHandlers(
+					text,
+					options?.images,
+					options?.source ?? "interactive",
+					this.isStreaming ? options?.streamingBehavior : undefined,
+				);
+				assertAdmissionCurrent();
+				if (!processedInput) {
+					reportPreflight("handled");
+					return { status: "admitted", delivery: "custom", admissionKey };
+				}
+				const { text: currentText, images: currentImages } = processedInput;
+
+				// Expand skill commands (/skill:name args) and prompt templates (/template args)
+				let expandedText = currentText;
+				if (expandPromptTemplates) {
+					expandedText = this._expandSkillCommand(expandedText);
+					expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
+				}
+
+				// If streaming, queue via steer() or followUp() based on option
+				if (this.isStreaming) {
+					if (!options?.streamingBehavior) {
 						throw new Error(
-							"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
+							"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
 						);
 					}
-
-					// Emit input event for extension interception (before skill/template expansion)
-					const processedInput = await this._runInputHandlers(
-						text,
-						options?.images,
-						options?.source ?? "interactive",
-						this.isStreaming ? options?.streamingBehavior : undefined,
-					);
 					assertAdmissionCurrent();
-					if (!processedInput) {
-						reportPreflight("handled");
-						return { status: "admitted", delivery: "custom", admissionKey };
+					if (options.streamingBehavior === "followUp") {
+						await this._queueFollowUp(expandedText, currentImages);
+					} else {
+						await this._queueSteer(expandedText, currentImages);
 					}
-					const { text: currentText, images: currentImages } = processedInput;
-
-					// Expand skill commands (/skill:name args) and prompt templates (/template args)
-					let expandedText = currentText;
-					if (expandPromptTemplates) {
-						expandedText = this._expandSkillCommand(expandedText);
-						expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
-					}
-
-					// If streaming, queue via steer() or followUp() based on option
-					if (this.isStreaming) {
-						if (!options?.streamingBehavior) {
-							throw new Error(
-								"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
-							);
-						}
-						assertAdmissionCurrent();
-						if (options.streamingBehavior === "followUp") {
-							await this._queueFollowUp(expandedText, currentImages);
-						} else {
-							await this._queueSteer(expandedText, currentImages);
-						}
-						reportPreflight("queued");
-						return {
-							status: "admitted",
-							delivery: options.streamingBehavior,
-							admissionKey,
-						};
-					}
-
-					assertAdmissionCurrent();
-					// Flush any pending bash and custom messages before the new prompt
-					this._flushPendingBashMessages();
-					this._flushPendingCustomMessages();
-
-					// Validate model
-					if (!this.model) {
-						throw new Error(formatNoModelSelectedMessage());
-					}
-
-					const hasConfiguredAuth =
-						this._modelRuntime.hasConfiguredAuth(this.model.provider) ||
-						(await this._modelRuntime.checkAuth(this.model.provider)) !== undefined;
-					assertAdmissionCurrent();
-					if (!hasConfiguredAuth) {
-						const isOAuth = this._modelRuntime.isUsingOAuth(this.model.provider);
-						if (isOAuth) {
-							throw new Error(
-								`Authentication failed for "${this.model.provider}". ` +
-									`Credentials may have expired or network is unavailable. ` +
-									`Run '/login ${this.model.provider}' to re-authenticate.`,
-							);
-						}
-						throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
-					}
-
-					// Check if we need to compact before sending (catches aborted responses).
-					// The user's new prompt is sent below, so do not call agent.continue() here.
-					const lastAssistant = this._findLastAssistantMessage();
-					if (lastAssistant) {
-						await this._checkCompaction(lastAssistant, false);
-					}
-					assertAdmissionCurrent();
-
-					// Run extension preparation before image normalization so model changes select
-					// the correct resize profile for both the request and persisted history.
-					const prepared = await this._prepareAgentStart(expandedText, currentImages, assertAdmissionCurrent);
-					const normalized = await this._normalizePromptImages(currentImages);
-					assertAdmissionCurrent();
-					const userText =
-						normalized.hints.length > 0 ? `${expandedText}\n\n${normalized.hints.join("\n")}` : expandedText;
-
-					messages = [];
-					const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: userText }];
-					userContent.push(...normalized.images);
-					messages.push({ role: "user", content: userContent, timestamp: Date.now() });
-
-					for (const msg of this._pendingNextTurnMessages) messages.push(msg);
-					this._pendingNextTurnMessages = [];
-					messages.push(...prepared.messages);
-					if (prepared.updateMessage) messages.unshift(prepared.updateMessage);
-
-					assertAdmissionCurrent();
-					reportPreflight("started");
-					completion = this._runAgentPrompt(messages);
-					return { status: "admitted", delivery: "turn", admissionKey };
-				} catch (error) {
-					throw error;
+					reportPreflight("queued");
+					return {
+						status: "admitted",
+						delivery: options.streamingBehavior,
+						admissionKey,
+					};
 				}
+
+				assertAdmissionCurrent();
+				// Flush any pending bash and custom messages before the new prompt
+				this._flushPendingBashMessages();
+				this._flushPendingCustomMessages();
+
+				// Validate model
+				if (!this.model) {
+					throw new Error(formatNoModelSelectedMessage());
+				}
+
+				const hasConfiguredAuth =
+					this._modelRuntime.hasConfiguredAuth(this.model.provider) ||
+					(await this._modelRuntime.checkAuth(this.model.provider)) !== undefined;
+				assertAdmissionCurrent();
+				if (!hasConfiguredAuth) {
+					const isOAuth = this._modelRuntime.isUsingOAuth(this.model.provider);
+					if (isOAuth) {
+						throw new Error(
+							`Authentication failed for "${this.model.provider}". ` +
+								`Credentials may have expired or network is unavailable. ` +
+								`Run '/login ${this.model.provider}' to re-authenticate.`,
+						);
+					}
+					throw new Error(formatNoApiKeyFoundMessage(this.model.provider));
+				}
+
+				// Check if we need to compact before sending (catches aborted responses).
+				// The user's new prompt is sent below, so do not call agent.continue() here.
+				const lastAssistant = this._findLastAssistantMessage();
+				if (lastAssistant) {
+					await this._checkCompaction(lastAssistant, false);
+				}
+				assertAdmissionCurrent();
+
+				// Run extension preparation before image normalization so model changes select
+				// the correct resize profile for both the request and persisted history.
+				const prepared = await this._prepareAgentStart(expandedText, currentImages, assertAdmissionCurrent);
+				const normalized = await this._normalizePromptImages(currentImages);
+				assertAdmissionCurrent();
+				const userText =
+					normalized.hints.length > 0 ? `${expandedText}\n\n${normalized.hints.join("\n")}` : expandedText;
+
+				messages = [];
+				const userContent: (TextContent | ImageContent)[] = [{ type: "text", text: userText }];
+				userContent.push(...normalized.images);
+				messages.push({ role: "user", content: userContent, timestamp: Date.now() });
+
+				for (const msg of this._pendingNextTurnMessages) messages.push(msg);
+				this._pendingNextTurnMessages = [];
+				messages.push(...prepared.messages);
+				if (prepared.updateMessage) messages.unshift(prepared.updateMessage);
+
+				assertAdmissionCurrent();
+				reportPreflight("started");
+				completion = this._runAgentPrompt(messages);
+				return { status: "admitted", delivery: "turn", admissionKey };
 			},
 		);
-		if (!completion && !preflightReported) {
-			reportPreflight(receipt.delivery === "custom" ? "handled" : receipt.delivery === "turn" ? "started" : "queued");
+		if (!completion && !preflightReported && receipt.status === "admitted") {
+			reportPreflight(
+				receipt.delivery === "custom" ? "handled" : receipt.delivery === "turn" ? "started" : "queued",
+			);
 		}
 		return { receipt, completion };
 	}

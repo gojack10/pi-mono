@@ -558,7 +558,7 @@ if (process.platform !== "win32") fs.chmodSync(piPath, 0o755);
 
 	it("cycles project built-in extension overrides in config local mode", async () => {
 		const storage = new InMemorySettingsStorage();
-		storage.withLock("global", () => JSON.stringify({ extensions: ["-builtin:mcp"] }));
+		storage.withLock("global", "legacy", () => JSON.stringify({ extensions: ["-builtin:mcp"] }));
 		const settingsManager = SettingsManager.fromStorage(storage, { projectTrusted: true });
 		const resolvedPaths = await new DefaultPackageManager({
 			cwd: projectDir,

@@ -281,7 +281,7 @@ describe("constrained tool sampling", () => {
 			],
 		});
 
-		const messages = convertResponsesMessages(makeModel(), context, new Set(["openai"]), {
+		const messages = convertResponsesMessages(makeModel(), context, (provider) => provider === "openai", {
 			grammarToolInputProperties: new Map([["sample_tool", "payload"]]),
 		});
 

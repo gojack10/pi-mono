@@ -285,16 +285,18 @@ describe("createAgentSession with virtual models", () => {
 		return { session, sessionManager };
 	}
 
-	it("restores the virtual selection instead of the physical model that answered", async () => {
+	it("allows explicitly selecting the recorded virtual model without implicit restoration", async () => {
 		const { runtime } = await createRuntime();
 
 		const { session } = await resume(runtime);
 
+		expect(session.model).toMatchObject({ provider: "unknown", id: "unknown" });
+		await session.setModel(runtime.getModel("router", "auto")!);
 		expect(session.model).toMatchObject({ provider: "router", id: "auto" });
 		expect(session.routedModel?.model).toMatchObject({ provider: "faux", id: "large" });
 	});
 
-	it("restores a virtual selection registered right before the session opens", async () => {
+	it("allows selecting a virtual model registered right before the session opens", async () => {
 		const { runtime, definition } = await createRuntime();
 		// Extensions register while the session is created, without waiting for the availability refresh.
 		runtime.registerVirtualModel({ ...definition, provider: "late" });
@@ -313,20 +315,24 @@ describe("createAgentSession with virtual models", () => {
 		onTestFinished(() => session.dispose());
 
 		expect(modelFallbackMessage).toBeUndefined();
+		expect(session.model).toMatchObject({ provider: "unknown", id: "unknown" });
+		await session.setModel(runtime.getModel("late", "auto")!);
 		expect(session.model).toMatchObject({ provider: "late", id: "auto" });
 	});
 
-	it("falls back to the physical model when the virtual model is not registered", async () => {
+	it("leaves physical selection explicit when the virtual model is not registered", async () => {
 		const { runtime } = await createRuntime();
 		runtime.unregisterVirtualModel("router", "auto");
 
 		const { session } = await resume(runtime);
 
+		expect(session.model).toMatchObject({ provider: "unknown", id: "unknown" });
+		await session.setModel(runtime.getModel("faux", "large")!);
 		expect(session.model).toMatchObject({ provider: "faux", id: "large" });
 		expect(session.routedModel).toBeUndefined();
 	});
 
-	it("falls back to the last physical response when the transcript ends with a routing failure", async () => {
+	it("does not implicitly restore the last response after a routing failure", async () => {
 		const { runtime, virtual } = await createRuntime();
 		const sessionManager = SessionManager.inMemory(tempDir);
 		sessionManager.appendModelChange("router", "auto");
@@ -349,11 +355,15 @@ describe("createAgentSession with virtual models", () => {
 		});
 		onTestFinished(() => session.dispose());
 
-		expect(session.model).toMatchObject({ provider: "faux", id: "large" });
+		expect(session.model).toMatchObject({ provider: "unknown", id: "unknown" });
+		expect(getBranchSelection(sessionManager.getBranch(), (provider, id) => runtime.getModel(provider, id))).toEqual({
+			provider: "faux",
+			modelId: "large",
+		});
 		expect(modelFallbackMessage).toBeUndefined();
 	});
 
-	it("resumes the selection made before tree navigation left its model_change on another branch", async () => {
+	it("records the selection after tree navigation without overriding recency on resume", async () => {
 		const { runtime, faux, virtual } = await createRuntime();
 		faux.setResponses(Array.from({ length: 6 }, () => fauxAssistantMessage("ok")));
 		const large = runtime.getModel("faux", "large")!;
@@ -385,9 +395,15 @@ describe("createAgentSession with virtual models", () => {
 			await session.prompt("three");
 			session.dispose();
 
+			expect(
+				getBranchSelection(sessionManager.getBranch(), (provider, id) => runtime.getModel(provider, id)),
+			).toEqual({
+				provider: after.provider,
+				modelId: after.id,
+			});
 			const resumed = await open(sessionManager);
 			onTestFinished(() => resumed.dispose());
-			expect(resumed.model).toMatchObject({ provider: after.provider, id: after.id });
+			expect(resumed.model).toMatchObject({ provider: "unknown", id: "unknown" });
 		}
 	});
 

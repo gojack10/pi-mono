@@ -225,7 +225,6 @@ export {
 } from "./core/extensions/index.ts";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
-export type { RegisteredMcpServer } from "./core/mcp-servers.ts";
 export {
 	ERROR_RECORD_ENTRY,
 	execChecked,
@@ -233,6 +232,7 @@ export {
 	normalizeErrorRecord,
 	Success,
 } from "./core/index.ts";
+export type { RegisteredMcpServer } from "./core/mcp-servers.ts";
 export { convertToLlm } from "./core/messages.ts";
 export { ModelRegistry } from "./core/model-registry.ts";
 export {
