@@ -89,7 +89,7 @@ Override defaults when you need specific values:
 }
 ```
 
-The file reloads each time you open `/model`. Edit during session; no restart needed.
+Restart Pi after editing `models.json`. The model picker uses the current catalog snapshot without refreshing or changing your position while it is open, and highlights the chat's current model.
 
 ## Google AI Studio Example
 

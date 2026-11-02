@@ -1,6 +1,6 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 
-export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
+export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "max";
 export const THINKING_LEVEL_OPTIONS: readonly ThinkingLevel[] = [
 	"off",
 	"minimal",

@@ -4812,7 +4812,11 @@ export class InteractiveMode {
 			return;
 		}
 
-		const model = await this.findExactModelMatch(searchTerm);
+		const models =
+			this.session.scopedModels.length > 0
+				? this.session.scopedModels.map((scoped) => scoped.model)
+				: this.session.modelRuntime.getAvailableSnapshot();
+		const model = findExactModelReferenceMatch(searchTerm, models);
 		if (model) {
 			try {
 				await this.session.setModel(model, { persist: false });
@@ -4828,40 +4832,6 @@ export class InteractiveMode {
 		}
 
 		this.showModelSelector(searchTerm);
-	}
-
-	private async findExactModelMatch(searchTerm: string): Promise<Model<any> | undefined> {
-		const cachedModels =
-			this.session.scopedModels.length > 0
-				? this.session.scopedModels.map((scoped) => scoped.model)
-				: [...this.session.modelRuntime.getAvailableSnapshot()];
-		const cachedMatch = findExactModelReferenceMatch(searchTerm, cachedModels);
-		if (cachedMatch || this.session.scopedModels.length > 0) return cachedMatch;
-
-		this.showStatus("Refreshing model catalogs…");
-		const controller = new AbortController();
-		let timedOut = false;
-		const timeout = setTimeout(() => {
-			timedOut = true;
-			controller.abort();
-		}, 15_000);
-		try {
-			const result = await refreshModelCatalogs(this.session.modelRuntime, controller.signal);
-			if (result.aborted && timedOut) {
-				this.showWarning("Model refresh timed out; searching cached models.");
-			} else if (result.errors.size > 0) {
-				this.showWarning(`Could not refresh ${[...result.errors.keys()].join(", ")}; searching cached models.`);
-			}
-		} catch (error) {
-			this.showWarning(
-				timedOut
-					? "Model refresh timed out; searching cached models."
-					: `Could not refresh model catalogs: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		} finally {
-			clearTimeout(timeout);
-		}
-		return findExactModelReferenceMatch(searchTerm, [...this.session.modelRuntime.getAvailableSnapshot()]);
 	}
 
 	/** Update the footer's available provider count from the current snapshot without refreshing catalogs. */
@@ -4988,13 +4958,13 @@ export class InteractiveMode {
 				(model) => selectModel(model, true),
 				defaultProvider && defaultModel ? { provider: defaultProvider, id: defaultModel } : undefined,
 			);
-			return { component: selector, focus: selector, dispose: () => selector.dispose() };
+			return { component: selector, focus: selector };
 		});
 	}
 
 	private showModelsSelector(): void {
-		let availableModels = [...this.session.modelRuntime.getAvailableSnapshot()];
-		let availableModelIds = new Set(availableModels.map((model) => `${model.provider}/${model.id}`));
+		const availableModels = [...this.session.modelRuntime.getAvailableSnapshot()];
+		const availableModelIds = new Set(availableModels.map((model) => `${model.provider}/${model.id}`));
 		const configuredPatterns = this.settingsManager.getEnabledModels();
 		const sessionScopedModels = this.session.scopedModels;
 		const configuredEnabledIds = (models: readonly Model<any>[]): string[] | null => {
@@ -5007,14 +4977,12 @@ export class InteractiveMode {
 			return ids;
 		};
 
-		let currentEnabledIds =
+		const currentEnabledIds =
 			sessionScopedModels.length > 0
 				? sessionScopedModels.map((scoped) => `${scoped.model.provider}/${scoped.model.id}`)
 				: configuredEnabledIds(availableModels);
-		let selectionChanged = false;
 
 		const updateSessionModels = (enabledIds: string[] | null): void => {
-			currentEnabledIds = enabledIds === null ? null : [...enabledIds];
 			const hasEnabledAvailableModel = enabledIds?.some((id) => availableModelIds.has(id)) ?? false;
 			const allAvailableModelsEnabled =
 				enabledIds !== null && [...availableModelIds].every((id) => enabledIds.includes(id));
@@ -5034,24 +5002,13 @@ export class InteractiveMode {
 		};
 
 		this.showSelector((done) => {
-			let disposed = false;
-			let timedOut = false;
-			const controller = new AbortController();
-			const timeout = setTimeout(() => {
-				timedOut = true;
-				controller.abort();
-			}, 15_000);
 			const selector = new ScopedModelsSelectorComponent(
 				{
 					allModels: availableModels,
 					enabledModelIds: currentEnabledIds,
-					refreshStatus: "Refreshing model catalogs…",
 				},
 				{
-					onChange: (enabledIds) => {
-						selectionChanged = true;
-						updateSessionModels(enabledIds);
-					},
+					onChange: updateSessionModels,
 					onPersist: (enabledIds) => {
 						const allEnabled =
 							enabledIds !== null &&
@@ -5067,50 +5024,7 @@ export class InteractiveMode {
 					},
 				},
 			);
-			void refreshModelCatalogs(this.session.modelRuntime, controller.signal)
-				.then((result) => {
-					if (disposed) return;
-					availableModels = [...this.session.modelRuntime.getAvailableSnapshot()];
-					availableModelIds = new Set(availableModels.map((model) => `${model.provider}/${model.id}`));
-					if (!selectionChanged && sessionScopedModels.length === 0) {
-						currentEnabledIds = configuredEnabledIds(availableModels);
-						selector.updateModels(availableModels, currentEnabledIds);
-					} else {
-						selector.updateModels(availableModels);
-					}
-					if (currentEnabledIds !== null) updateSessionModels(currentEnabledIds);
-					if (result.aborted && timedOut) {
-						selector.setRefreshStatus("Model refresh timed out; showing cached models.", "warning");
-					} else if (result.errors.size > 0) {
-						selector.setRefreshStatus(
-							`Could not refresh ${[...result.errors.keys()].join(", ")}; showing cached models.`,
-							"warning",
-						);
-					} else {
-						selector.setRefreshStatus("Model catalogs refreshed.", "success");
-					}
-					this.ui.requestRender();
-				})
-				.catch((error: unknown) => {
-					if (disposed) return;
-					selector.setRefreshStatus(
-						timedOut
-							? "Model refresh timed out; showing cached models."
-							: `Could not refresh model catalogs: ${error instanceof Error ? error.message : String(error)}`,
-						"warning",
-					);
-					this.ui.requestRender();
-				})
-				.finally(() => clearTimeout(timeout));
-			return {
-				component: selector,
-				focus: selector,
-				dispose: () => {
-					disposed = true;
-					clearTimeout(timeout);
-					controller.abort();
-				},
-			};
+			return { component: selector, focus: selector };
 		});
 	}
 

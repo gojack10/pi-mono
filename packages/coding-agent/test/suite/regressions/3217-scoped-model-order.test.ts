@@ -1,5 +1,5 @@
 import { setKeybindings, type TUI } from "@earendil-works/pi-tui";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { KeybindingsManager } from "../../../src/core/keybindings.ts";
 import { ModelSelectorComponent } from "../../../src/modes/interactive/components/model-selector.ts";
 import { ScopedModelsSelectorComponent } from "../../../src/modes/interactive/components/scoped-models-selector.ts";
@@ -83,12 +83,6 @@ describe("issue #3217 scoped model ordering", () => {
 			() => {},
 			() => {},
 		);
-
-		await vi.waitFor(() => {
-			const rendered = stripAnsi(selector.render(120).join("\n"));
-			expect(rendered).toContain(`[${modelOne.provider}]`);
-			expect(rendered).toContain("Model catalogs refreshed.");
-		});
 
 		const renderedLines = stripAnsi(selector.render(120).join("\n"))
 			.split("\n")
